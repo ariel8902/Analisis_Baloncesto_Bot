@@ -19,10 +19,10 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Modelo exacto exigido por la API de Google para tu cuenta
-MODELO_GEMINI = 'gemini-3.8-flash'
+# Modelos en orden de preferencia (Principal y Fallback)
+MODELOS_GEMINI = ['gemini-3.8-flash', 'gemini-1.5-flash']
 
-# Ligas de Baloncesto ampliadas para evitar vacíos de calendario
+# Ligas de Baloncesto ampliadas
 LIGAS_BASKETBALL = [
     {"nombre": "🇪🇺 EuroLeague", "sport_key": "basketball_euroleague"},
     {"nombre": "🇪🇸 Liga ACB", "sport_key": "basketball_spain_acb"},
@@ -158,11 +158,11 @@ def obtener_partidos_baloncesto():
     return lista_partidos
 
 # ---------------------------------------------------------
-# 4. EVALUACIÓN CON GEMINI IA
+# 4. EVALUACIÓN CON GEMINI IA (CON FALLBACK)
 # ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
-        return None
+        return None, "IA no configurada"
 
     prompt = (
         f"Analiza cuantitativa y tácticamente el partido: {partido['local']} vs {partido['visitante']} ({partido['liga']}).\n"
@@ -175,24 +175,25 @@ def analizar_partido_baloncesto_ia(partido):
 
     tiempos_espera = [10, 20]
 
-    for intento in range(2):
-        try:
-            res = client_gemini.models.generate_content(
-                model=MODELO_GEMINI,
-                contents=prompt,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": AnalisisBaloncestoSchema,
-                }
-            )
-            if res and res.text:
-                return json.loads(res.text)
-        except Exception as e:
-            espera = tiempos_espera[intento]
-            print(f"Aviso en {MODELO_GEMINI} (Intento {intento+1}). Esperando {espera}s... Error: {e}")
-            time.sleep(espera)
+    for modelo in MODELOS_GEMINI:
+        for intento in range(2):
+            try:
+                res = client_gemini.models.generate_content(
+                    model=modelo,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": AnalisisBaloncestoSchema,
+                    }
+                )
+                if res and res.text:
+                    return json.loads(res.text), "OK"
+            except Exception as e:
+                espera = tiempos_espera[intento]
+                print(f"Aviso en {modelo} (Intento {intento+1}). Esperando {espera}s... Error: {e}")
+                time.sleep(espera)
 
-    return None
+    return None, "Límite de cuota o error en servidor Gemini (429/503)"
 
 # ---------------------------------------------------------
 # 5. ORQUESTADOR PRINCIPAL
@@ -214,14 +215,17 @@ def ejecutar_escaneo():
 
     enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP</b> | Escaneo: <b>{fecha_colombia}</b>")
     partidos_enviados = 0
+    conteo_descartados_certeza = 0
+    conteo_errores_api = 0
 
     for p in partidos:
         time.sleep(6)
 
-        analisis = analizar_partido_baloncesto_ia(p)
+        analisis, estado_ia = analizar_partido_baloncesto_ia(p)
 
         if not analisis:
-            print(f"No se pudo obtener análisis de IA para {p['local']} vs {p['visitante']}. Descartado.")
+            conteo_errores_api += 1
+            print(f"No se pudo obtener análisis de IA para {p['local']} vs {p['visitante']}. Razón: {estado_ia}")
             continue
 
         prob_principal = analisis.get("prob_pick_principal", 0)
@@ -230,6 +234,8 @@ def ejecutar_escaneo():
 
         # FILTRO ESTRICTO DE CERTEZA (MÍNIMO 70%)
         if prob_max < UMBRAL_MINIMO_FILTRO:
+            conteo_descartados_certeza += 1
+            print(f"Partido descartado por baja certeza ({prob_max}% < 70%): {p['local']} vs {p['visitante']}")
             continue
 
         mensaje = (
@@ -246,7 +252,19 @@ def ejecutar_escaneo():
         partidos_enviados += 1
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"<b>Escaneo baloncesto completado.</b> Pronósticos enviados: {partidos_enviados}")
+    # RESUMEN EXPLICATIVO SI NO SE ENVIARON PRONÓSTICOS
+    msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos enviados: {partidos_enviados}"
+    if partidos_enviados == 0:
+        detalles = []
+        if conteo_descartados_certeza > 0:
+            detalles.append(f"• {conteo_descartados_certeza} partido(s) analizados no alcanzaron el umbral mínimo del {UMBRAL_MINIMO_FILTRO}% de certeza.")
+        if conteo_errores_api > 0:
+            detalles.append(f"• {conteo_errores_api} partido(s) no se pudieron procesar por saturación/límite de cuota en el servidor de IA (Error 429).")
+        
+        if detalles:
+            msg_resumen += "\n\n<b>Detalle del escaneo:</b>\n" + "\n".join(detalles)
+
+    enviar_mensaje_telegram(msg_resumen)
     print(f"Proceso baloncesto completado. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
