@@ -19,8 +19,8 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Identificadores de modelo válidos requeridos por Google
-MODELOS_GEMINI = ['gemini-3.8-flash', 'gemini-1.5-flash']
+# Modelo estándar soportado oficialmente por la SDK
+MODELO_GEMINI = 'gemini-2.5-flash'
 
 # Ligas de Baloncesto ampliadas para evitar vacíos de calendario
 LIGAS_BASKETBALL = [
@@ -57,7 +57,6 @@ def enviar_mensaje_telegram(texto):
 # 2. MODELO MATEMÁTICO CUANTITATIVO (MOTOR LOCAL)
 # ---------------------------------------------------------
 def calcular_probabilidad_implicita(cuota_local, cuota_visitante):
-    """Calcula probabilidad matemática desmargina (sin la comisión de la casa)."""
     if not cuota_local or not cuota_visitante:
         return 50.0, 50.0
     prob_raw_local = 1.0 / cuota_local
@@ -152,14 +151,14 @@ def obtener_partidos_baloncesto():
                     "cuota_over": cuota_over if cuota_over else "N/A",
                     "cuota_under": cuota_under if cuota_under else "N/A"
                 })
-            time.sleep(0.4)
+            time.sleep(0.5)
         except Exception as e:
             print(f"Error al consultar {liga['nombre']}:", e)
 
     return lista_partidos
 
 # ---------------------------------------------------------
-# 4. EVALUACIÓN CON GEMINI IA (CON RETRIES Y NOMBRES VÁLIDOS)
+# 4. EVALUACIÓN CON GEMINI IA (CONTROL DE RITMO 15 RPM)
 # ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
@@ -174,25 +173,24 @@ def analizar_partido_baloncesto_ia(partido):
         f"Establece en 'pick_principal' la alternativa con mayor probabilidad/certeza (mínimo 70%) y asigna su probabilidad exacta."
     )
 
-    tiempos_espera = [8, 15]
+    tiempos_espera = [12, 20]
 
-    for modelo in MODELOS_GEMINI:
-        for intento in range(2):
-            try:
-                res = client_gemini.models.generate_content(
-                    model=modelo,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": AnalisisBaloncestoSchema,
-                    }
-                )
-                if res and res.text:
-                    return json.loads(res.text)
-            except Exception as e:
-                espera = tiempos_espera[intento]
-                print(f"Aviso en {modelo} (Intento {intento+1}). Esperando {espera}s... Error: {e}")
-                time.sleep(espera)
+    for intento in range(2):
+        try:
+            res = client_gemini.models.generate_content(
+                model=MODELO_GEMINI,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": AnalisisBaloncestoSchema,
+                }
+            )
+            if res and res.text:
+                return json.loads(res.text)
+        except Exception as e:
+            espera = tiempos_espera[intento]
+            print(f"Aviso en {MODELO_GEMINI} (Intento {intento+1}). Esperando {espera}s... Error: {e}")
+            time.sleep(espera)
 
     return None
 
@@ -218,7 +216,8 @@ def ejecutar_escaneo():
     partidos_enviados = 0
 
     for p in partidos:
-        time.sleep(4)
+        # Pausa de 6 segundos entre análisis para NO exceder las 15 llamadas por minuto (RPM)
+        time.sleep(6)
 
         analisis = analizar_partido_baloncesto_ia(p)
 
