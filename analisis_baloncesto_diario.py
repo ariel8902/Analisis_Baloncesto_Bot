@@ -19,8 +19,8 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Lista de modelos (Principal y Fallback en caso de 503)
-MODELOS_GEMINI = ['gemini-3.8-flash', 'gemini-2.5-flash']
+# Nombres de modelos válidos respaldados en el SDK oficial
+MODELOS_GEMINI = ['gemini-2.5-flash', 'gemini-1.5-flash']
 
 # Ligas de Baloncesto en The Odds API
 LIGAS_BASKETBALL = [
@@ -51,7 +51,7 @@ def enviar_mensaje_telegram(texto):
         print("Error enviando mensaje a Telegram:", e)
 
 # ---------------------------------------------------------
-# 2. INGESTA DE CUOTAS (THE ODDS API - PRÓXIMAS 20 HORAS)
+# 2. INGESTA DE CUOTAS (THE ODDS API - PRÓXIMAS 36 HORAS)
 # ---------------------------------------------------------
 def obtener_partidos_baloncesto():
     if not ODDS_API_KEY:
@@ -60,7 +60,8 @@ def obtener_partidos_baloncesto():
 
     lista_partidos = []
     ahora_utc = datetime.now(timezone.utc)
-    limite_jornada = ahora_utc + timedelta(hours=20)
+    # Rango de 36 horas para capturar la jornada completa del día siguiente
+    limite_jornada = ahora_utc + timedelta(hours=36)
 
     for liga in LIGAS_BASKETBALL:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -85,7 +86,9 @@ def obtener_partidos_baloncesto():
                     dt_utc = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
                     if not (ahora_utc <= dt_utc <= limite_jornada):
                         continue
-                    hora_fmt = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA).strftime("%H:%M")
+                    dt_colombia = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                    fecha_fmt = dt_colombia.strftime("%Y-%m-%d")
+                    hora_fmt = dt_colombia.strftime("%H:%M")
                 except Exception:
                     continue
 
@@ -121,6 +124,7 @@ def obtener_partidos_baloncesto():
                     "liga": liga["nombre"],
                     "local": home_team,
                     "visitante": away_team,
+                    "fecha": fecha_fmt,
                     "hora": hora_fmt,
                     "cuota_local": cuota_local,
                     "cuota_visitante": cuota_visitante,
@@ -135,7 +139,7 @@ def obtener_partidos_baloncesto():
     return lista_partidos
 
 # ---------------------------------------------------------
-# 3. EVALUACIÓN CON GEMINI IA (CON FALLBACK Y RETRIES)
+# 3. EVALUACIÓN CON GEMINI IA (CON RETRIES Y MODELOS VÁLIDOS)
 # ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
@@ -149,10 +153,10 @@ def analizar_partido_baloncesto_ia(partido):
         f"para la mejor opción (Línea de Puntos u Hándicap/Ganador) y una opción de cobertura."
     )
 
-    tiempos_espera = [8, 15, 25]
+    tiempos_espera = [10, 20]
 
     for modelo in MODELOS_GEMINI:
-        for intento in range(3):
+        for intento in range(2):
             try:
                 res = client_gemini.models.generate_content(
                     model=modelo,
@@ -166,7 +170,7 @@ def analizar_partido_baloncesto_ia(partido):
                     return json.loads(res.text)
             except Exception as e:
                 espera = tiempos_espera[intento]
-                print(f"Aviso en {modelo} (Intento {intento+1}). Reintentando en {espera}s... Error: {e}")
+                print(f"Aviso en {modelo} (Intento {intento+1}). Esperando {espera}s... Error: {e}")
                 time.sleep(espera)
 
     return None
@@ -176,24 +180,24 @@ def analizar_partido_baloncesto_ia(partido):
 # ---------------------------------------------------------
 def ejecutar_escaneo():
     fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    print(f"Iniciando escaneo de Baloncesto Prepartido: {fecha_colombia}")
+    print(f"Iniciando escaneo ampliado de Baloncesto (Ventana 36h): {fecha_colombia}")
 
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
         mensaje = (
             f"🏀 <b>REPORTE BALONCESTO - {fecha_colombia}</b>\n\n"
-            f"<i>Sin partidos programados en la ventana de las próximas 20 horas.</i>"
+            f"<i>Sin partidos programados en la ventana de las próximas 36 horas.</i>"
         )
         enviar_mensaje_telegram(mensaje)
-        print("Finalizado: Sin partidos hoy.")
+        print("Finalizado: Sin partidos en el radar de 36h.")
         return
 
-    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP</b> | Fecha: <b>{fecha_colombia}</b>")
+    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP</b> | Escaneo: <b>{fecha_colombia}</b>")
     partidos_enviados = 0
 
     for p in partidos:
-        time.sleep(5)  # Pausa preventiva entre partidos
+        time.sleep(6)  # Pausa preventiva entre partidos para evitar el error 429
 
         analisis = analizar_partido_baloncesto_ia(p)
 
@@ -209,12 +213,12 @@ def ejecutar_escaneo():
 
         mensaje = (
             f"🏀 <b>{p['liga']}</b> | {p['local']} vs {p['visitante']}\n"
-            f"⏰ <b>Hora:</b> <code>{p['hora']}</code> | <b>Cuotas:</b> <code>{p['cuota_local']} - {p['cuota_visitante']}</code>\n"
-            f"🎯 <b>Línea de Puntos:</b> <code>{p['linea_total']}</code>\n\n"
+            f"📅 <b>Fecha:</b> <code>{p['fecha']}</code> | ⏰ <b>Hora:</b> <code>{p['hora']}</code>\n"
+            f"💰 <b>Cuotas:</b> <code>{p['cuota_local']} - {p['cuota_visitante']}</code> | 🎯 <b>Línea:</b> <code>{p['linea_total']}</code>\n\n"
             f"🎯 <b>APUESTA PRINCIPAL: {analisis['pick_principal']}</b>\n"
             f"📊 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code> | <b>Stake:</b> <code>{analisis['stake_principal']}</code>\n"
             f"💡 <i>[Gemini] {analisis['analisis_tactico']}</i>\n\n"
-            f"🛡️ <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
+            f"🛡 <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
         )
 
         enviar_mensaje_telegram(mensaje)
