@@ -19,8 +19,8 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Modelo estándar soportado oficialmente por la SDK
-MODELO_GEMINI = 'gemini-2.5-flash'
+# Modelo exacto exigido por la API de Google para tu cuenta
+MODELO_GEMINI = 'gemini-3.8-flash'
 
 # Ligas de Baloncesto ampliadas para evitar vacíos de calendario
 LIGAS_BASKETBALL = [
@@ -158,7 +158,7 @@ def obtener_partidos_baloncesto():
     return lista_partidos
 
 # ---------------------------------------------------------
-# 4. EVALUACIÓN CON GEMINI IA (CONTROL DE RITMO 15 RPM)
+# 4. EVALUACIÓN CON GEMINI IA
 # ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
@@ -173,7 +173,7 @@ def analizar_partido_baloncesto_ia(partido):
         f"Establece en 'pick_principal' la alternativa con mayor probabilidad/certeza (mínimo 70%) y asigna su probabilidad exacta."
     )
 
-    tiempos_espera = [12, 20]
+    tiempos_espera = [10, 20]
 
     for intento in range(2):
         try:
@@ -216,7 +216,6 @@ def ejecutar_escaneo():
     partidos_enviados = 0
 
     for p in partidos:
-        # Pausa de 6 segundos entre análisis para NO exceder las 15 llamadas por minuto (RPM)
         time.sleep(6)
 
         analisis = analizar_partido_baloncesto_ia(p)
