@@ -19,8 +19,8 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Nombres oficiales activos en Google GenAI SDK (Evita error 404/503)
-MODELOS_GEMINI = ['gemini-2.5-flash', 'gemini-2.0-flash']
+# Identificadores de modelo válidos requeridos por Google
+MODELOS_GEMINI = ['gemini-3.8-flash', 'gemini-1.5-flash']
 
 # Ligas de Baloncesto ampliadas para evitar vacíos de calendario
 LIGAS_BASKETBALL = [
@@ -136,7 +136,6 @@ def obtener_partidos_baloncesto():
                 if not cuota_local or not cuota_visitante:
                     continue
 
-                # Cálculo de motor matemático cuantitativo previo
                 p_local_math, p_visitante_math = calcular_probabilidad_implicita(cuota_local, cuota_visitante)
 
                 lista_partidos.append({
@@ -160,7 +159,7 @@ def obtener_partidos_baloncesto():
     return lista_partidos
 
 # ---------------------------------------------------------
-# 4. EVALUACIÓN CON GEMINI IA (CON RETRIES Y MODELOS OFICIALES)
+# 4. EVALUACIÓN CON GEMINI IA (CON RETRIES Y NOMBRES VÁLIDOS)
 # ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
@@ -175,7 +174,7 @@ def analizar_partido_baloncesto_ia(partido):
         f"Establece en 'pick_principal' la alternativa con mayor probabilidad/certeza (mínimo 70%) y asigna su probabilidad exacta."
     )
 
-    tiempos_espera = [6, 12]
+    tiempos_espera = [8, 15]
 
     for modelo in MODELOS_GEMINI:
         for intento in range(2):
@@ -219,7 +218,7 @@ def ejecutar_escaneo():
     partidos_enviados = 0
 
     for p in partidos:
-        time.sleep(4)  # Pausa preventiva entre análisis
+        time.sleep(4)
 
         analisis = analizar_partido_baloncesto_ia(p)
 
