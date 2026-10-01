@@ -18,7 +18,9 @@ UMBRAL_MINIMO_FILTRO = 70.0
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODELO_GEMINI = 'gemini-3.8-flash'
+
+# Lista de modelos (Principal y Fallback en caso de 503)
+MODELOS_GEMINI = ['gemini-3.8-flash', 'gemini-2.5-flash']
 
 # Ligas de Baloncesto en The Odds API
 LIGAS_BASKETBALL = [
@@ -133,7 +135,7 @@ def obtener_partidos_baloncesto():
     return lista_partidos
 
 # ---------------------------------------------------------
-# 3. EVALUACIÓN CON GEMINI IA (CON PAUSAS Y RETRIES)
+# 3. EVALUACIÓN CON GEMINI IA (CON FALLBACK Y RETRIES)
 # ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
@@ -147,19 +149,25 @@ def analizar_partido_baloncesto_ia(partido):
         f"para la mejor opción (Línea de Puntos u Hándicap/Ganador) y una opción de cobertura."
     )
 
-    try:
-        res = client_gemini.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": AnalisisBaloncestoSchema,
-            }
-        )
-        if res and res.text:
-            return json.loads(res.text)
-    except Exception as e:
-        print("Aviso en llamada a Gemini:", e)
+    tiempos_espera = [8, 15, 25]
+
+    for modelo in MODELOS_GEMINI:
+        for intento in range(3):
+            try:
+                res = client_gemini.models.generate_content(
+                    model=modelo,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": AnalisisBaloncestoSchema,
+                    }
+                )
+                if res and res.text:
+                    return json.loads(res.text)
+            except Exception as e:
+                espera = tiempos_espera[intento]
+                print(f"Aviso en {modelo} (Intento {intento+1}). Reintentando en {espera}s... Error: {e}")
+                time.sleep(espera)
 
     return None
 
@@ -185,22 +193,12 @@ def ejecutar_escaneo():
     partidos_enviados = 0
 
     for p in partidos:
-        time.sleep(4)  # Pausa preventiva anti Rate-Limit
+        time.sleep(5)  # Pausa preventiva entre partidos
 
-        analisis = None
-        reintentos = 0
-        tiempos_espera = [5, 10, 15]
-
-        while reintentos < 3 and not analisis:
-            analisis = analizar_partido_baloncesto_ia(p)
-            if not analisis:
-                espera = tiempos_espera[reintentos]
-                reintentos += 1
-                print(f"Reintentando análisis IA para {p['local']} vs {p['visitante']} (Intento {reintentos} tras {espera}s)...")
-                time.sleep(espera)
+        analisis = analizar_partido_baloncesto_ia(p)
 
         if not analisis:
-            print(f"No se pudo obtener análisis de IA para {p['local']} vs {p['visitante']} tras 3 intentos.")
+            print(f"No se pudo obtener análisis de IA para {p['local']} vs {p['visitante']}. Descartado.")
             continue
 
         prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
@@ -221,7 +219,7 @@ def ejecutar_escaneo():
 
         enviar_mensaje_telegram(mensaje)
         partidos_enviados += 1
-        time.sleep(2)
+        time.sleep(3)
 
     enviar_mensaje_telegram(f"<b>Escaneo baloncesto completado.</b> Pronósticos enviados: {partidos_enviados}")
     print(f"Proceso baloncesto completado. Enviados: {partidos_enviados}")
