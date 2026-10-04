@@ -1,174 +1,234 @@
 import os
-import sys
 import json
 import time
 import requests
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y VARIABLES DE ENTORNO
+# 1. CONFIGURACIÓN Y CREDENCIALES (EXCLUSIVO BALONCESTO)
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not GEMINI_API_KEY:
-    print("❌ ERROR CRÍTICO: Faltan credenciales esenciales (Telegram o Gemini API).")
-    sys.exit(1)
+UMBRAL_MINIMO_FILTRO = 70.0
+ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+MODELO_GEMINI = 'gemini-3.8-flash'
 
-# ---------------------------------------------------------
-# 2. ESQUEMA ESTRUCTURADO PYDANTIC (STRICT OUTPUTS)
-# ---------------------------------------------------------
-class ApuestaBaloncesto(BaseModel):
-    equipo_local: str = Field(description="Nombre oficial del equipo local")
-    equipo_visitante: str = Field(description="Nombre oficial del equipo visitante")
-    liga_torneo: str = Field(description="Competición (ej. NBA, Euroliga, Liga Endesa)")
-    hora_partido_colombia: str = Field(description="Hora programada convertida a Hora Colombia (ej. 06:00 PM)")
-    fecha_partido: str = Field(description="Fecha del partido en formato DD/MM/AAAA")
-    
-    puntos_estimados_local: float = Field(description="Puntos esperados del equipo local")
-    puntos_estimados_visitante: float = Field(description="Puntos esperados del equipo visitante")
-    
-    apuesta_principal: str = Field(description="Pronóstico principal (ej. Ganador Directo, Hándicap -4.5)")
-    probabilidad_principal: float = Field(description="Porcentaje de probabilidad del modelo")
-    stake_principal: float = Field(description="Stake sugerido de 1.0 a 5.0")
-    
-    nivel_confianza: str = Field(description="'ALTA CERTEZA (>=75%)' o 'RIESGO MODERADO (<75%)'")
-    analisis_resumido: str = Field(description="Breve análisis contextual táctico de máximo 3 frases concisas")
-    cobertura_alternativa: Optional[str] = Field(None, description="Línea de cobertura o protección secundaria")
-    probabilidad_cobertura: Optional[float] = Field(None, description="Probabilidad de la cobertura")
+LIGAS_BALONCESTO = [
+    {"nombre": "🏀 NBA Preseason", "sport_key": "basketball_nba_preseason"},
+    {"nombre": "🏀 NBA Regular", "sport_key": "basketball_nba"},
+    {"nombre": "🇪🇺 Euroleague", "sport_key": "basketball_euroleague"},
+    {"nombre": "🇪🇸 Liga Endesa (España)", "sport_key": "basketball_spain_liga_endesa"},
+    {"nombre": "🎓 NCAA Baloncesto", "sport_key": "basketball_ncaab"}
+]
 
-class ListaApuestasBaloncesto(BaseModel):
-    partidos_analizados: List[ApuestaBaloncesto]
+class AnalisisBaloncestoSchema(BaseModel):
+    prob_pick_principal: float = Field(description="Probabilidad estimada para la opción principal (0 a 100)")
+    pick_principal: str = Field(description="Mercado principal recomendado (ej. Gana Local Moneyline, Handicap +4.5, Altas 218.5)")
+    stake_principal: str = Field(description="Stake sugerido según la certeza (ej. 3/5 o 4/5)")
+    prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
+    pick_cobertura: str = Field(description="Opción de cobertura (ej. Handicap Alternativo Local +8.5)")
+    analisis_tactico: str = Field(description="Justificación táctica sintética basada en ritmo, forma y ausencias clave en máx 2 oraciones.")
 
-# ---------------------------------------------------------
-# 3. OBTENCIÓN DE DATOS Y CONVERSIÓN HORARIA
-# ---------------------------------------------------------
-def obtener_datos_deportes_api():
-    utc_now = datetime.now(timezone.utc)
-    colombia_now = utc_now - timedelta(hours=5)
-    fecha_hoy_str = colombia_now.strftime("%Y-%m-%d")
-
-    if not ODDS_API_KEY:
-        print("⚠️ ODDS_API_KEY no detectada. Usando escaneo contextual.")
-        return f"Analizar partidos principales de NBA y Ligas Top para la jornada de hoy ({fecha_hoy_str})."
-
-    url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds/?apiKey={ODDS_API_KEY}&regions=us&markets=h2h,spreads,totals"
-    try:
-        response = requests.get(url, timeout=12)
-        if response.status_code == 200:
-            partidos = response.json()
-            print(f"📊 Datos cargados de la API ({len(partidos)} eventos detectados). Fecha Col: {fecha_hoy_str}")
-            return json.dumps(partidos[:12], ensure_ascii=False)
-        else:
-            print(f"⚠️ Error en API Deporte: Status {response.status_code}")
-            return f"Analizar partidos principales de hoy ({fecha_hoy_str})."
-    except Exception as e:
-        print(f"⚠️ Fallo de conexión con la API: {e}")
-        return f"Analizar partidos principales de hoy ({fecha_hoy_str})."
-
-# ---------------------------------------------------------
-# 4. ENVÍO A TELEGRAM
-# ---------------------------------------------------------
-def enviar_telegram(mensaje: str) -> bool:
+def enviar_mensaje_telegram(texto):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Error: Credenciales de Telegram no configuradas.")
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": mensaje,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
         res = requests.post(url, json=payload, timeout=10)
         return res.status_code == 200
     except Exception as e:
-        print(f"❌ Error al enviar mensaje a Telegram: {e}")
+        print("Error enviando mensaje a Telegram:", e)
         return False
 
 # ---------------------------------------------------------
-# 5. EJECUCIÓN DEL MOTOR ANALÍTICO
+# 2. MOTOR MATEMÁTICO (PROBABILIDAD IMPLÍCITA MONEYLINE)
 # ---------------------------------------------------------
-def ejecutar_analisis():
-    print("🏀 [INICIO] Ejecutando motor analítico de Baloncesto...")
-    datos_api = obtener_datos_deportes_api()
-    
-    utc_now = datetime.now(timezone.utc)
-    colombia_now = utc_now - timedelta(hours=5)
-    fecha_actual_col = colombia_now.strftime("%d/%m/%Y")
+def calcular_probabilidad_implicita(cuota_local, cuota_visitante):
+    if not cuota_local or not cuota_visitante:
+        return 50.0, 50.0
+    p_loc = 1.0 / cuota_local
+    p_vis = 1.0 / cuota_visitante
+    margen = p_loc + p_vis
+    return round((p_loc / margen) * 100, 1), round((p_vis / margen) * 100, 1)
 
-    prompt = f"""
-    Eres un analista cuantitativo de Baloncesto profesional (NBA, Euroliga, Ligas Top).
-    FECHA ACTUAL DE EVALUACIÓN (COLOMBIA): {fecha_actual_col}
+# ---------------------------------------------------------
+# 3. INGESTA DE CUOTAS DE BALONCESTO (FILTRO HOY)
+# ---------------------------------------------------------
+def obtener_partidos_baloncesto():
+    if not ODDS_API_KEY:
+        print("Error: ODDS_API_KEY no está configurada.")
+        return []
 
-    REGLAS ESTRICTAS:
-    1. EXCLUSIVIDAD DE HOY: Procesa ÚNICAMENTE los partidos de la JORNADA DE HOY ({fecha_actual_col}). Descarta días futuros.
-    2. HORARIO COLOMBIA: Convierte la hora del partido a Hora Colombia (UTC-5) en formato 12 horas (ej. 06:00 PM, 08:30 PM).
-    3. EVALUACIÓN Y SELECCIÓN:
-       - Prioriza partidos con probabilidad >= 75.0% (Nivel de confianza: 'ALTA CERTEZA (>=75%)').
-       - Si ningún partido alcanza el 75%, selecciona HASTA 2 MEJORES PARTIDOS con probabilidad >= 68.0% (Nivel de confianza: 'RIESGO MODERADO (<75%)').
-    4. SINTESIS CONCISA: Breve análisis contextual táctico de máximo 3 frases.
+    lista_partidos = []
+    ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
+    fecha_hoy_str = ahora_colombia.strftime("%Y-%m-%d")
 
-    DATOS DE ENTRADA:
-    {datos_api}
-    """
+    for liga in LIGAS_BALONCESTO:
+        url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
+        params = {
+            "apiKey": ODDS_API_KEY,
+            "regions": "us,eu",
+            "markets": "h2h,spreads,totals",
+            "oddsFormat": "decimal"
+        }
+        try:
+            res = requests.get(url, params=params, timeout=10)
+            if res.status_code != 200:
+                continue
+            eventos = res.json()
+            for ev in eventos:
+                commence_raw = ev.get("commence_time", "")
+                if not commence_raw:
+                    continue
+                dt_utc = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
+                dt_colombia = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                
+                # FILTRO ESTRICTO: Solo partidos agendados para la fecha de HOY en Colombia
+                if dt_colombia.strftime("%Y-%m-%d") != fecha_hoy_str:
+                    continue
+
+                home_team, away_team = ev.get("home_team"), ev.get("away_team")
+                c_loc, c_vis = None, None
+                spread_point, total_point = None, None
+                
+                bookmakers = ev.get("bookmakers", [])
+                if bookmakers:
+                    for m in bookmakers[0].get("markets", []):
+                        if m.get("key") == "h2h":
+                            for o in m.get("outcomes", []):
+                                if o.get("name") == home_team: c_loc = o.get("price")
+                                elif o.get("name") == away_team: c_vis = o.get("price")
+                        elif m.get("key") == "spreads":
+                            for o in m.get("outcomes", []):
+                                if o.get("name") == home_team: spread_point = o.get("point")
+                        elif m.get("key") == "totals":
+                            outcomes = m.get("outcomes", [])
+                            if outcomes: total_point = outcomes[0].get("point")
+                
+                if not c_loc or not c_vis:
+                    continue
+                
+                p_loc, p_vis = calcular_probabilidad_implicita(c_loc, c_vis)
+                lista_partidos.append({
+                    "liga": liga["nombre"],
+                    "local": home_team,
+                    "visitante": away_team,
+                    "fecha": dt_colombia.strftime("%Y-%m-%d"),
+                    "hora": dt_colombia.strftime("%I:%M %p"),  # Formato 12 horas (ej. 06:30 PM)
+                    "cuota_local": c_loc,
+                    "cuota_visitante": c_vis,
+                    "spread_point": spread_point,
+                    "total_point": total_point,
+                    "prob_math_local": p_loc,
+                    "prob_math_visitante": p_vis
+                })
+            time.sleep(0.4)
+        except Exception as e:
+            print(f"Error al consultar {liga['nombre']}:", e)
+    return lista_partidos
+
+# ---------------------------------------------------------
+# 4. EVALUACIÓN Y VALIDACIÓN CON IA (GEMINI 3.8)
+# ---------------------------------------------------------
+def analizar_partido_baloncesto_ia(partido):
+    if not client_gemini:
+        return None, "IA no configurada"
+
+    info_lineas = ""
+    if partido.get("spread_point") is not None:
+        info_lineas += f"Handicap referencia Local: {partido['spread_point']}. "
+    if partido.get("total_point") is not None:
+        info_lineas += f"Línea Totales referencia: {partido['total_point']}. "
+
+    prompt = (
+        f"Analiza el partido de baloncesto para HOY: {partido['local']} vs {partido['visitante']} ({partido['liga']}).\n"
+        f"Cuotas Moneyline: Local ({partido['cuota_local']}) / Visitante ({partido['cuota_visitante']}).\n"
+        f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Visitante ({partido['prob_math_visitante']}%).\n"
+        f"{info_lineas}\n"
+        f"Considera factores de baloncesto (ritmo de juego, eficiencia ofensiva/defensiva, ausencias clave de jugadores, descansos back-to-back o rotaciones).\n"
+        f"Establece en 'pick_principal' la mejor opción de valor con certeza >= {UMBRAL_MINIMO_FILTRO}%."
+    )
 
     try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
+        res = client_gemini.models.generate_content(
+            model=MODELO_GEMINI,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=ListaApuestasBaloncesto,
-                temperature=0.15,
-            ),
-        )
-
-        if not response.text:
-            print("⚠️ Gemini API no retornó contenido.")
-            return
-
-        resultado: ListaApuestasBaloncesto = ListaApuestasBaloncesto.model_validate_json(response.text)
-        partidos = resultado.partidos_analizados
-
-        if not partidos:
-            print("ℹ️ Ningún partido de baloncesto alcanzó el umbral mínimo de análisis hoy.")
-            return
-
-        print(f"✅ Se encontraron {len(partidos)} pronósticos para hoy. Enviando a Telegram...")
-
-        for i, p in enumerate(partidos, 1):
-            mensaje = (
-                f"🏀 *ANÁLISIS DE BALONCESTO*\n"
-                f"📅 *Fecha:* `{p.fecha_partido}` | ⏰ *Hora Col:* `{p.hora_partido_colombia}`\n"
-                f"🏆 *Liga:* {p.liga_torneo} | 🛡 *Estado:* `{p.nivel_confianza}`\n"
-                f"───────────────────────────\n"
-                f"⚔️ *{p.equipo_local} vs {p.equipo_visitante}*\n"
-                f"📊 *Proyección:* {p.equipo_local} ({p.puntos_estimados_local:.1f}) - ({p.puntos_estimados_visitante:.1f}) {p.equipo_visitante}\n\n"
-                f"🎯 *APUESTA PRINCIPAL:* `{p.apuesta_principal}`\n"
-                f"📈 *Probabilidad:* `{p.probabilidad_principal:.1f}%` | 💵 *Stake:* `{p.stake_principal:.1f}/5`\n"
-                f"───────────────────────────\n"
-                f"💡 *[Análisis Táctico]:* {p.analisis_resumido}\n"
+                response_schema=AnalisisBaloncestoSchema,
+                temperature=0.15
             )
-
-            if p.cobertura_alternativa and p.probabilidad_cobertura:
-                mensaje += f"🛡 *Cobertura:* `{p.cobertura_alternativa}` (`{p.probabilidad_cobertura:.1f}%`)\n"
-
-            enviar_telegram(mensaje)
-            print(f" Enviado a Telegram ({i}/{len(partidos)}): {p.equipo_local} vs {p.equipo_visitante}")
-            time.sleep(2)
-
-        print("🚀 Proceso de Baloncesto completado con éxito.")
-
+        )
+        if res and res.text:
+            return json.loads(res.text), "OK"
     except Exception as e:
-        print(f"❌ Error en la ejecución del motor de Baloncesto: {e}")
-        sys.exit(1)
+        print(f"Error evaluando {partido['local']} vs {partido['visitante']}: {e}")
+        return None, str(e)
+
+    return None, "ERROR_GENERAL"
+
+# ---------------------------------------------------------
+# 5. ORQUESTADOR PRINCIPAL
+# ---------------------------------------------------------
+def ejecutar_escaneo():
+    fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+    print(f"Iniciando escaneo optimizado de Baloncesto (HOY): {fecha_colombia}")
+    partidos = obtener_partidos_baloncesto()
+
+    if not partidos:
+        msg = f"🏀 <b>REPORTE BALONCESTO - {fecha_colombia}</b>\n\n<i>Sin partidos programados con cuotas para la jornada de hoy.</i>"
+        enviar_mensaje_telegram(msg)
+        print("Finalizado: Sin partidos en la jornada de hoy.")
+        return
+
+    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP</b> | Escaneo: <b>{fecha_colombia}</b>")
+    
+    partidos_enviados = 0
+    descartados_certeza = 0
+
+    for p in partidos:
+        time.sleep(2)
+        analisis, estado = analizar_partido_baloncesto_ia(p)
+
+        if not analisis:
+            continue
+
+        prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
+        if prob_max < UMBRAL_MINIMO_FILTRO:
+            descartados_certeza += 1
+            continue
+
+        msg = (
+            f"🏀 <b>{p['liga']}</b> | {p['local']} vs {p['visitante']}\n"
+            f"📅 <b>Fecha:</b> <code>{p['fecha']}</code> | ⏰ <b>Hora Col:</b> <code>{p['hora']}</code>\n"
+            f"💰 <b>Cuotas ML:</b> <code>{p['cuota_local']} - {p['cuota_visitante']}</code>\n\n"
+            f"🎯 <b>APUESTA PRINCIPAL: {analisis['pick_principal']}</b>\n"
+            f"📊 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code> | <b>Stake:</b> <code>{analisis['stake_principal']}</code>\n"
+            f"💡 <i>[Gemini] {analisis['analisis_tactico']}</i>\n\n"
+            f"🛡 <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
+        )
+        
+        exito_envio = enviar_mensaje_telegram(msg)
+        if exito_envio:
+            partidos_enviados += 1
+            print(f"✅ Enviado a Telegram: {p['local']} vs {p['visitante']}")
+
+    msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos enviados: {partidos_enviados}"
+    if partidos_enviados == 0 and descartados_certeza > 0:
+        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) analizados no alcanzaron el {UMBRAL_MINIMO_FILTRO}% de certeza."
+
+    enviar_mensaje_telegram(msg_resumen)
+    print(f"Proceso baloncesto completado. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
-    ejecutar_analisis()
+    ejecutar_escaneo()
