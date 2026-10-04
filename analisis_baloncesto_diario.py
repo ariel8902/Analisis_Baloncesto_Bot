@@ -2,8 +2,8 @@ name: Bot de Analisis Baloncesto Prepartido
 
 on:
   schedule:
-    # 14:05 UTC equivale a las 09:05 AM Hora Colombia (UTC-5)
-    - cron: '5 14 * * *'
+    # 14:18 UTC equivale a las 09:18 AM Hora Colombia (Evita la cola de las 9:00)
+    - cron: '18 14 * * *'
   workflow_dispatch:
 
 jobs:
