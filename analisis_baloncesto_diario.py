@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import time
-import math
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -38,9 +37,10 @@ class ApuestaBaloncesto(BaseModel):
     puntos_estimados_visitante: float = Field(description="Puntos esperados del equipo visitante")
     
     apuesta_principal: str = Field(description="Pronóstico principal (ej. Ganador Directo, Hándicap -4.5)")
-    probabilidad_principal: float = Field(description="Porcentaje de probabilidad del modelo (DEBE SER >= 75.0%)")
+    probabilidad_principal: float = Field(description="Porcentaje de probabilidad del modelo")
     stake_principal: float = Field(description="Stake sugerido de 1.0 a 5.0")
     
+    nivel_confianza: str = Field(description="'ALTA CERTEZA (>=75%)' o 'RIESGO MODERADO (<75%)'")
     analisis_resumido: str = Field(description="Breve análisis contextual táctico de máximo 3 frases concisas")
     cobertura_alternativa: Optional[str] = Field(None, description="Línea de cobertura o protección secundaria")
     probabilidad_cobertura: Optional[float] = Field(None, description="Probabilidad de la cobertura")
@@ -52,8 +52,6 @@ class ListaApuestasBaloncesto(BaseModel):
 # 3. OBTENCIÓN DE DATOS Y CONVERSIÓN HORARIA
 # ---------------------------------------------------------
 def obtener_datos_deportes_api():
-    """Consulta partidos programados EXCLUSIVAMENTE para la jornada de hoy."""
-    # Obtener fecha actual en Hora Colombia (UTC-5)
     utc_now = datetime.now(timezone.utc)
     colombia_now = utc_now - timedelta(hours=5)
     fecha_hoy_str = colombia_now.strftime("%Y-%m-%d")
@@ -77,7 +75,7 @@ def obtener_datos_deportes_api():
         return f"Analizar partidos principales de hoy ({fecha_hoy_str})."
 
 # ---------------------------------------------------------
-# 4. ENVÍO A TELEGRAM CON FORMATO LIMPIO
+# 4. ENVÍO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_telegram(mensaje: str) -> bool:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -101,22 +99,21 @@ def ejecutar_analisis():
     print("🏀 [INICIO] Ejecutando motor analítico de Baloncesto...")
     datos_api = obtener_datos_deportes_api()
     
-    # Calcular fecha exacta para el prompt
     utc_now = datetime.now(timezone.utc)
     colombia_now = utc_now - timedelta(hours=5)
     fecha_actual_col = colombia_now.strftime("%d/%m/%Y")
 
     prompt = f"""
     Eres un analista cuantitativo de Baloncesto profesional (NBA, Euroliga, Ligas Top).
-    
     FECHA ACTUAL DE EVALUACIÓN (COLOMBIA): {fecha_actual_col}
 
     REGLAS ESTRICTAS:
     1. EXCLUSIVIDAD DE HOY: Procesa ÚNICAMENTE los partidos de la JORNADA DE HOY ({fecha_actual_col}). Descarta días futuros.
-    2. HORARIO COLOMBIA: Convierte la hora del partido a Hora Colombia (UTC-5) en formato 12 horas (ejemplo: 06:00 PM, 08:30 PM).
-    3. FILTRO DE CERTEZA (>= 75.0%): Selecciona únicamente las apuestas donde la simulación alcance o supere el 75.0% de probabilidad.
-    4. SINTESIS CONCISA: El análisis contextual debe ser directo y breve (máximo 3 frases), resaltando ritmo (Pace), ventaja de localía y bajas.
-    5. HONESTIDAD: Si ningún partido supera el 75.0% de certeza hoy, retorna una lista vacía.
+    2. HORARIO COLOMBIA: Convierte la hora del partido a Hora Colombia (UTC-5) en formato 12 horas (ej. 06:00 PM, 08:30 PM).
+    3. EVALUACIÓN Y SELECCIÓN:
+       - Prioriza partidos con probabilidad >= 75.0% (Nivel de confianza: 'ALTA CERTEZA (>=75%)').
+       - Si ningún partido alcanza el 75%, selecciona HASTA 2 MEJORES PARTIDOS con probabilidad >= 68.0% (Nivel de confianza: 'RIESGO MODERADO (<75%)').
+    4. SINTESIS CONCISA: Breve análisis contextual táctico de máximo 3 frases.
 
     DATOS DE ENTRADA:
     {datos_api}
@@ -141,16 +138,16 @@ def ejecutar_analisis():
         partidos = resultado.partidos_analizados
 
         if not partidos:
-            print("ℹ️ Ningún partido de baloncesto de hoy alcanzó el umbral del 75% de certeza.")
+            print("ℹ️ Ningún partido de baloncesto alcanzó el umbral mínimo de análisis hoy.")
             return
 
-        print(f"✅ Se encontraron {len(partidos)} pronósticos aprobados (>= 75%). Enviando a Telegram...")
+        print(f"✅ Se encontraron {len(partidos)} pronósticos para hoy. Enviando a Telegram...")
 
         for i, p in enumerate(partidos, 1):
             mensaje = (
                 f"🏀 *ANÁLISIS DE BALONCESTO*\n"
                 f"📅 *Fecha:* `{p.fecha_partido}` | ⏰ *Hora Col:* `{p.hora_partido_colombia}`\n"
-                f"🏆 *Liga:* {p.liga_torneo}\n"
+                f"🏆 *Liga:* {p.liga_torneo} | 🛡 *Estado:* `{p.nivel_confianza}`\n"
                 f"───────────────────────────\n"
                 f"⚔️ *{p.equipo_local} vs {p.equipo_visitante}*\n"
                 f"📊 *Proyección:* {p.equipo_local} ({p.puntos_estimados_local:.1f}) - ({p.puntos_estimados_visitante:.1f}) {p.equipo_visitante}\n\n"
@@ -164,7 +161,7 @@ def ejecutar_analisis():
                 mensaje += f"🛡 *Cobertura:* `{p.cobertura_alternativa}` (`{p.probabilidad_cobertura:.1f}%`)\n"
 
             enviar_telegram(mensaje)
-            print(f" Envilado a Telegram ({i}/{len(partidos)}): {p.equipo_local} vs {p.equipo_visitante}")
+            print(f" Enviado a Telegram ({i}/{len(partidos)}): {p.equipo_local} vs {p.equipo_visitante}")
             time.sleep(2)
 
         print("🚀 Proceso de Baloncesto completado con éxito.")
