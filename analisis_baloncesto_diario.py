@@ -21,7 +21,7 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not GEMINI_API_KEY:
     print("❌ ERROR CRÍTICO: Faltan credenciales esenciales (Telegram o Gemini API).")
     sys.exit(1)
 
-# Inicialización de cliente con la SDK oficial google-genai
+# Inicialización del cliente oficial con la SDK google-genai
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------
@@ -118,7 +118,7 @@ def ejecutar_analisis():
     OBJETIVO:
     Procesar la cartelera de la JORNADA DE HOY mediante el modelo cuantitativo de expectativa de puntos, eficiencia ofensiva/defensiva y simulación de posesiones (Pace).
 
-    REGLAS ESTRICTAS DE VALIDACIÓN:
+    REGLAS STRICTAS DE VALIDACIÓN:
     1. EXCLUSIVIDAD TEMPORAL: Procesa ÚNICAMENTE los partidos de la JORNADA DE HOY. Descarta cualquier partido de fechas posteriores.
     2. UMBRAL DE CERTEZA DE VALOR (>= 75.0%): Selecciona únicamente las apuestas donde la simulación y el análisis táctico otorguen una probabilidad calculada IGUAL O SUPERIOR AL 75.0%.
     3. MODELO DE SIMULACIÓN: Calcula los puntos proyectados para cada equipo evaluando posesiones estimadas y ratings ofensivos/defensivos.
@@ -130,9 +130,9 @@ def ejecutar_analisis():
     """
 
     try:
-        # Uso del modelo de producción oficial con salida estructurada
+        # Llamada corregida con el modelo de producción activo: gemini-3.8-flash
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
