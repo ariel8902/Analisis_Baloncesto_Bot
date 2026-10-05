@@ -2,14 +2,14 @@ name: Bot de Analisis Baloncesto Prepartido
 
 on:
   schedule:
-    # 14:18 UTC equivale a las 09:18 AM Hora Colombia
-    - cron: '18 14 * * *'
+    # 13:18 UTC -> 08:18 AM Hora Colombia
+    # 01:18 UTC -> 08:18 PM Hora Colombia (Cubre madrugada)
+    - cron: '18 13,1 * * *'
   workflow_dispatch:
 
 jobs:
   analisis_baloncesto:
     runs-on: ubuntu-latest
-
     steps:
       - name: Descargar Código
         uses: actions/checkout@v4
