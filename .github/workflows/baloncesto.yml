@@ -26,8 +26,8 @@ jobs:
 
       - name: Ejecutar motor de Baloncesto
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}  # Revisa si en tu Secrets usas TELEGRAM_TOKEN_BALONCESTO o el general
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}      # Revisa si en tu Secrets usas TELEGRAM_CHAT_ID_BALONCESTO o el general
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python analisis_baloncesto_diario.py
