@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (EXCLUSIVO BALONCESTO)
+# 1. CONFIGURACIÓN Y CREDENCIALES (BALONCESTO OPTIMIZADO BETPLAY)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -32,10 +32,11 @@ LIGAS_BALONCESTO = [
 class AnalisisBaloncestoSchema(BaseModel):
     prob_pick_principal: float = Field(description="Probabilidad estimada para la opción principal (0 a 100)")
     pick_principal: str = Field(description="Mercado principal recomendado (ej. Gana Local Moneyline, Handicap +4.5, Altas 218.5)")
+    regla_valor_betplay: str = Field(description="Instrucción de valor para BetPlay si movieron la línea de puntos.")
     stake_principal: str = Field(description="Stake sugerido según la certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
     pick_cobertura: str = Field(description="Opción de cobertura (ej. Handicap Alternativo Local +8.5)")
-    analisis_tactico: str = Field(description="Justificación táctica sintética basada en ritmo, forma y ausencias clave en máx 2 oraciones.")
+    analisis_tactico: str = Field(description="Justificación táctica basada en ritmo, forma y ausencias clave en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -44,15 +45,12 @@ def enviar_mensaje_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        res = requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=5)  # Timeout de seguridad de 5s
         return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
         return False
 
-# ---------------------------------------------------------
-# 2. MOTOR MATEMÁTICO (PROBABILIDAD IMPLÍCITA MONEYLINE)
-# ---------------------------------------------------------
 def calcular_probabilidad_implicita(cuota_local, cuota_visitante):
     if not cuota_local or not cuota_visitante:
         return 50.0, 50.0
@@ -62,7 +60,7 @@ def calcular_probabilidad_implicita(cuota_local, cuota_visitante):
     return round((p_loc / margen) * 100, 1), round((p_vis / margen) * 100, 1)
 
 # ---------------------------------------------------------
-# 3. INGESTA DE CUOTAS DE BALONCESTO (VENTANA MÓVIL 12 HORAS)
+# 2. INGESTA DE CUOTAS (CON TIMEOUT Y REGLAS DE SEGURIDAD)
 # ---------------------------------------------------------
 def obtener_partidos_baloncesto():
     if not ODDS_API_KEY:
@@ -70,7 +68,6 @@ def obtener_partidos_baloncesto():
         return []
 
     lista_partidos = []
-    # Ventana móvil de 12 horas continuas desde este instante
     ahora_utc = datetime.now(timezone.utc)
     fin_ventana_utc = ahora_utc + timedelta(hours=12)
 
@@ -78,12 +75,13 @@ def obtener_partidos_baloncesto():
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
         params = {
             "apiKey": ODDS_API_KEY,
-            "regions": "us,eu",
+            "regions": "eu,us",
             "markets": "h2h,spreads,totals",
             "oddsFormat": "decimal"
         }
         try:
-            res = requests.get(url, params=params, timeout=10)
+            # timeout=5 de seguridad: si la API no responde en 5 segundos, aborta y pasa a la siguiente liga
+            res = requests.get(url, params=params, timeout=5)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -93,7 +91,6 @@ def obtener_partidos_baloncesto():
                     continue
                 dt_utc = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
                 
-                # FILTRO MÓVIL: Solo partidos programados dentro de las PRÓXIMAS 12 HORAS
                 if not (ahora_utc <= dt_utc <= fin_ventana_utc):
                     continue
 
@@ -104,7 +101,13 @@ def obtener_partidos_baloncesto():
                 
                 bookmakers = ev.get("bookmakers", [])
                 if bookmakers:
-                    for m in bookmakers[0].get("markets", []):
+                    bm_seleccionado = bookmakers[0]
+                    for bm in bookmakers:
+                        if bm.get("key") in ["unibet", "unibet_eu", "888sport"]:
+                            bm_seleccionado = bm
+                            break
+
+                    for m in bm_seleccionado.get("markets", []):
                         if m.get("key") == "h2h":
                             for o in m.get("outcomes", []):
                                 if o.get("name") == home_team: c_loc = o.get("price")
@@ -125,7 +128,7 @@ def obtener_partidos_baloncesto():
                     "local": home_team,
                     "visitante": away_team,
                     "fecha": dt_colombia.strftime("%Y-%m-%d"),
-                    "hora": dt_colombia.strftime("%I:%M %p"),  # Formato 12 horas (ej. 06:30 PM)
+                    "hora": dt_colombia.strftime("%I:%M %p"),
                     "cuota_local": c_loc,
                     "cuota_visitante": c_vis,
                     "spread_point": spread_point,
@@ -133,13 +136,13 @@ def obtener_partidos_baloncesto():
                     "prob_math_local": p_loc,
                     "prob_math_visitante": p_vis
                 })
-            time.sleep(0.4)
+            time.sleep(0.3)
         except Exception as e:
             print(f"Error al consultar {liga['nombre']}:", e)
     return lista_partidos
 
 # ---------------------------------------------------------
-# 4. EVALUACIÓN Y VALIDACIÓN CON IA (GEMINI 3.8)
+# 3. EVALUACIÓN Y VALIDACIÓN CON IA (GEMINI 3.8)
 # ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
@@ -157,6 +160,7 @@ def analizar_partido_baloncesto_ia(partido):
         f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Visitante ({partido['prob_math_visitante']}%).\n"
         f"{info_lineas}\n"
         f"Considera factores de baloncesto (ritmo de juego, eficiencia ofensiva/defensiva, ausencias clave de jugadores, descansos back-to-back o rotaciones).\n"
+        f"REGLA BETPLAY: En 'regla_valor_betplay' indica el límite de tolerancia si en BetPlay la línea movió puntos antes de descartar.\n"
         f"Establece en 'pick_principal' la mejor opción de valor con certeza >= {UMBRAL_MINIMO_FILTRO}%."
     )
 
@@ -179,7 +183,7 @@ def analizar_partido_baloncesto_ia(partido):
     return None, "ERROR_GENERAL"
 
 # ---------------------------------------------------------
-# 5. ORQUESTADOR PRINCIPAL
+# 4. ORQUESTADOR PRINCIPAL
 # ---------------------------------------------------------
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
@@ -193,13 +197,13 @@ def ejecutar_escaneo():
         print("Finalizado: Sin partidos en la ventana de 12 horas.")
         return
 
-    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (PRÓXIMAS 12H)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
+    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (BETPLAY READY)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
     partidos_enviados = 0
     descartados_certeza = 0
 
     for p in partidos:
-        time.sleep(2)
+        time.sleep(1.5)
         analisis, estado = analizar_partido_baloncesto_ia(p)
 
         if not analisis:
@@ -215,6 +219,7 @@ def ejecutar_escaneo():
             f"📅 <b>Fecha:</b> <code>{p['fecha']}</code> | ⏰ <b>Hora Col:</b> <code>{p['hora']}</code>\n"
             f"💰 <b>Cuotas ML:</b> <code>{p['cuota_local']} - {p['cuota_visitante']}</code>\n\n"
             f"🎯 <b>APUESTA PRINCIPAL: {analisis['pick_principal']}</b>\n"
+            f"📲 <b>Regla de Valor BetPlay:</b> <i>{analisis['regla_valor_betplay']}</i>\n"
             f"📊 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code> | <b>Stake:</b> <code>{analisis['stake_principal']}</code>\n"
             f"💡 <i>[Gemini] {analisis['analisis_tactico']}</i>\n\n"
             f"🛡 <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
