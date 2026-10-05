@@ -62,7 +62,7 @@ def calcular_probabilidad_implicita(cuota_local, cuota_visitante):
     return round((p_loc / margen) * 100, 1), round((p_vis / margen) * 100, 1)
 
 # ---------------------------------------------------------
-# 3. INGESTA DE CUOTAS DE BALONCESTO (FILTRO HOY)
+# 3. INGESTA DE CUOTAS DE BALONCESTO (VENTANA MÓVIL 12 HORAS)
 # ---------------------------------------------------------
 def obtener_partidos_baloncesto():
     if not ODDS_API_KEY:
@@ -70,8 +70,9 @@ def obtener_partidos_baloncesto():
         return []
 
     lista_partidos = []
-    ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
-    fecha_hoy_str = ahora_colombia.strftime("%Y-%m-%d")
+    # Ventana móvil de 12 horas continuas desde este instante
+    ahora_utc = datetime.now(timezone.utc)
+    fin_ventana_utc = ahora_utc + timedelta(hours=12)
 
     for liga in LIGAS_BALONCESTO:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -91,12 +92,12 @@ def obtener_partidos_baloncesto():
                 if not commence_raw:
                     continue
                 dt_utc = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
-                dt_colombia = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
                 
-                # FILTRO ESTRICTO: Solo partidos agendados para la fecha de HOY en Colombia
-                if dt_colombia.strftime("%Y-%m-%d") != fecha_hoy_str:
+                # FILTRO MÓVIL: Solo partidos programados dentro de las PRÓXIMAS 12 HORAS
+                if not (ahora_utc <= dt_utc <= fin_ventana_utc):
                     continue
 
+                dt_colombia = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
                 home_team, away_team = ev.get("home_team"), ev.get("away_team")
                 c_loc, c_vis = None, None
                 spread_point, total_point = None, None
@@ -151,7 +152,7 @@ def analizar_partido_baloncesto_ia(partido):
         info_lineas += f"Línea Totales referencia: {partido['total_point']}. "
 
     prompt = (
-        f"Analiza el partido de baloncesto para HOY: {partido['local']} vs {partido['visitante']} ({partido['liga']}).\n"
+        f"Analiza el partido de baloncesto para las PRÓXIMAS 12 HORAS: {partido['local']} vs {partido['visitante']} ({partido['liga']}).\n"
         f"Cuotas Moneyline: Local ({partido['cuota_local']}) / Visitante ({partido['cuota_visitante']}).\n"
         f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Visitante ({partido['prob_math_visitante']}%).\n"
         f"{info_lineas}\n"
@@ -181,17 +182,18 @@ def analizar_partido_baloncesto_ia(partido):
 # 5. ORQUESTADOR PRINCIPAL
 # ---------------------------------------------------------
 def ejecutar_escaneo():
-    fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    print(f"Iniciando escaneo optimizado de Baloncesto (HOY): {fecha_colombia}")
+    ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
+    fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
+    print(f"Iniciando escaneo de Baloncesto (Próximas 12 Horas): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
-        msg = f"🏀 <b>REPORTE BALONCESTO - {fecha_colombia}</b>\n\n<i>Sin partidos programados con cuotas para la jornada de hoy.</i>"
+        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados con cuotas para las próximas 12 horas.</i>"
         enviar_mensaje_telegram(msg)
-        print("Finalizado: Sin partidos en la jornada de hoy.")
+        print("Finalizado: Sin partidos en la ventana de 12 horas.")
         return
 
-    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP</b> | Escaneo: <b>{fecha_colombia}</b>")
+    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (PRÓXIMAS 12H)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
     partidos_enviados = 0
     descartados_certeza = 0
