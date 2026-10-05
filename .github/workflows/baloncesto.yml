@@ -2,14 +2,15 @@ name: Bot de Analisis Baloncesto Prepartido
 
 on:
   schedule:
-    # 13:18 UTC -> 08:18 AM Hora Colombia (Bloque Día: 08:00 AM a 08:00 PM)
-    # 01:18 UTC -> 08:18 PM Hora Colombia (Bloque Noche/Madrugada: 08:00 PM a 08:00 AM)
+    # 13:18 UTC -> 08:18 AM Hora Colombia (Bloque Día)
+    # 01:18 UTC -> 08:18 PM Hora Colombia (Bloque Noche/Madrugada)
     - cron: '18 13,1 * * *'
   workflow_dispatch:
 
 jobs:
   analisis_baloncesto:
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # <-- Límite de seguridad: Cancela si supera los 5 minutos
     steps:
       - name: Descargar Código
         uses: actions/checkout@v4
@@ -26,8 +27,8 @@ jobs:
 
       - name: Ejecutar motor de Baloncesto
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}  # Revisa si en tu Secrets usas TELEGRAM_TOKEN_BALONCESTO o el general
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}      # Revisa si en tu Secrets usas TELEGRAM_CHAT_ID_BALONCESTO o el general
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python analisis_baloncesto_diario.py
