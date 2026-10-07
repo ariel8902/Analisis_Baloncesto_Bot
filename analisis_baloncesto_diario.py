@@ -8,14 +8,14 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (BALONCESTO OPTIMIZADO BETPLAY)
+# 1. CONFIGURACIÓN Y CREDENCIALES (BALONCESTO - REFORZADO 80%)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-UMBRAL_MINIMO_FILTRO = 70.0
+UMBRAL_MINIMO_FILTRO = 80.0  # <-- EXIGENCIA ELEVADA AL 80% PARA FILTRAR VARIANZA
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -36,7 +36,7 @@ class AnalisisBaloncestoSchema(BaseModel):
     stake_principal: str = Field(description="Stake sugerido según la certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
     pick_cobertura: str = Field(description="Opción de cobertura (ej. Handicap Alternativo Local +8.5)")
-    analisis_tactico: str = Field(description="Justificación táctica basada en ritmo, forma y ausencias clave en máx 2 oraciones.")
+    analisis_tactico: str = Field(description="Justificación táctica basada en ritmo, rotaciones y bajas clave en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -45,7 +45,7 @@ def enviar_mensaje_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        res = requests.post(url, json=payload, timeout=5)  # Timeout de seguridad de 5s
+        res = requests.post(url, json=payload, timeout=5)
         return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
@@ -59,9 +59,6 @@ def calcular_probabilidad_implicita(cuota_local, cuota_visitante):
     margen = p_loc + p_vis
     return round((p_loc / margen) * 100, 1), round((p_vis / margen) * 100, 1)
 
-# ---------------------------------------------------------
-# 2. INGESTA DE CUOTAS (CON TIMEOUT Y REGLAS DE SEGURIDAD)
-# ---------------------------------------------------------
 def obtener_partidos_baloncesto():
     if not ODDS_API_KEY:
         print("Error: ODDS_API_KEY no está configurada.")
@@ -80,7 +77,6 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            # timeout=5 de seguridad: si la API no responde en 5 segundos, aborta y pasa a la siguiente liga
             res = requests.get(url, params=params, timeout=5)
             if res.status_code != 200:
                 continue
@@ -141,9 +137,6 @@ def obtener_partidos_baloncesto():
             print(f"Error al consultar {liga['nombre']}:", e)
     return lista_partidos
 
-# ---------------------------------------------------------
-# 3. EVALUACIÓN Y VALIDACIÓN CON IA (GEMINI 3.8)
-# ---------------------------------------------------------
 def analizar_partido_baloncesto_ia(partido):
     if not client_gemini:
         return None, "IA no configurada"
@@ -159,9 +152,9 @@ def analizar_partido_baloncesto_ia(partido):
         f"Cuotas Moneyline: Local ({partido['cuota_local']}) / Visitante ({partido['cuota_visitante']}).\n"
         f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Visitante ({partido['prob_math_visitante']}%).\n"
         f"{info_lineas}\n"
-        f"Considera factores de baloncesto (ritmo de juego, eficiencia ofensiva/defensiva, ausencias clave de jugadores, descansos back-to-back o rotaciones).\n"
+        f"REGLA DE EXIGENCIA ELEVADA: Sé extremadamente riguroso con la certeza. Evalúa posibles rotaciones de minutos o descanso de titulares.\n"
         f"REGLA BETPLAY: En 'regla_valor_betplay' indica el límite de tolerancia si en BetPlay la línea movió puntos antes de descartar.\n"
-        f"Establece en 'pick_principal' la mejor opción de valor con certeza >= {UMBRAL_MINIMO_FILTRO}%."
+        f"Establece en 'pick_principal' la mejor opción de valor SOLO SI la certeza es >= {UMBRAL_MINIMO_FILTRO}%."
     )
 
     try:
@@ -171,7 +164,7 @@ def analizar_partido_baloncesto_ia(partido):
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=AnalisisBaloncestoSchema,
-                temperature=0.15
+                temperature=0.10  # Reducimos temperatura para mayor consistencia lógica
             )
         )
         if res and res.text:
@@ -182,22 +175,18 @@ def analizar_partido_baloncesto_ia(partido):
 
     return None, "ERROR_GENERAL"
 
-# ---------------------------------------------------------
-# 4. ORQUESTADOR PRINCIPAL
-# ---------------------------------------------------------
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Próximas 12 Horas): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Filtro 80%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
         msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados con cuotas para las próximas 12 horas.</i>"
         enviar_mensaje_telegram(msg)
-        print("Finalizado: Sin partidos en la ventana de 12 horas.")
         return
 
-    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (BETPLAY READY)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
+    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (FILTRO REFORZADO 80%)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
     partidos_enviados = 0
     descartados_certeza = 0
@@ -232,10 +221,9 @@ def ejecutar_escaneo():
 
     msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos enviados: {partidos_enviados}"
     if partidos_enviados == 0 and descartados_certeza > 0:
-        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) analizados no alcanzaron el {UMBRAL_MINIMO_FILTRO}% de certeza."
+        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) analizados descartados por no alcanzar el {UMBRAL_MINIMO_FILTRO}% de certeza."
 
     enviar_mensaje_telegram(msg_resumen)
-    print(f"Proceso baloncesto completado. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
     ejecutar_escaneo()
