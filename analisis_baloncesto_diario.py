@@ -8,14 +8,14 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (BALONCESTO - REFORZADO 80%)
+# 1. CONFIGURACIÓN Y CREDENCIALES (BALONCESTO BETPLAY REAL)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-UMBRAL_MINIMO_FILTRO = 80.0  # <-- EXIGENCIA ELEVADA AL 80% PARA FILTRAR VARIANZA
+UMBRAL_MINIMO_FILTRO = 75.0  # FILTRO REALISTA Y EXIGENTE EN MERCADOS COMERCIALES
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -31,12 +31,12 @@ LIGAS_BALONCESTO = [
 
 class AnalisisBaloncestoSchema(BaseModel):
     prob_pick_principal: float = Field(description="Probabilidad estimada para la opción principal (0 a 100)")
-    pick_principal: str = Field(description="Mercado principal recomendado (ej. Gana Local Moneyline, Handicap +4.5, Altas 218.5)")
-    regla_valor_betplay: str = Field(description="Instrucción de valor para BetPlay si movieron la línea de puntos.")
+    pick_principal: str = Field(description="Mercado principal comercial en BetPlay (ej. Gana Local Moneyline, Handicap +3.5 Local, Over 218.5 Puntos)")
+    regla_valor_betplay: str = Field(description="Instrucción de tolerancia de cuota/línea si BetPlay ajustó la línea comercial.")
     stake_principal: str = Field(description="Stake sugerido según la certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
-    pick_cobertura: str = Field(description="Opción de cobertura (ej. Handicap Alternativo Local +8.5)")
-    analisis_tactico: str = Field(description="Justificación táctica basada en ritmo, rotaciones y bajas clave en máx 2 oraciones.")
+    pick_cobertura: str = Field(description="Opción de cobertura comercial (ej. Handicap Alternativo o Total Alternativo)")
+    analisis_tactico: str = Field(description="Justificación táctica sin complacencias basada en ritmo, rotaciones y bajas en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -143,18 +143,20 @@ def analizar_partido_baloncesto_ia(partido):
 
     info_lineas = ""
     if partido.get("spread_point") is not None:
-        info_lineas += f"Handicap referencia Local: {partido['spread_point']}. "
+        info_lineas += f"Hándicap de Referencia Disponible: {partido['spread_point']}. "
     if partido.get("total_point") is not None:
-        info_lineas += f"Línea Totales referencia: {partido['total_point']}. "
+        info_lineas += f"Línea de Totales Disponible: {partido['total_point']}. "
 
     prompt = (
         f"Analiza el partido de baloncesto para las PRÓXIMAS 12 HORAS: {partido['local']} vs {partido['visitante']} ({partido['liga']}).\n"
         f"Cuotas Moneyline: Local ({partido['cuota_local']}) / Visitante ({partido['cuota_visitante']}).\n"
         f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Visitante ({partido['prob_math_visitante']}%).\n"
-        f"{info_lineas}\n"
-        f"REGLA DE EXIGENCIA ELEVADA: Sé extremadamente riguroso con la certeza. Evalúa posibles rotaciones de minutos o descanso de titulares.\n"
-        f"REGLA BETPLAY: En 'regla_valor_betplay' indica el límite de tolerancia si en BetPlay la línea movió puntos antes de descartar.\n"
-        f"Establece en 'pick_principal' la mejor opción de valor SOLO SI la certeza es >= {UMBRAL_MINIMO_FILTRO}%."
+        f"{info_lineas}\n\n"
+        f"REGLA OBLIGATORIA DE ANCLAJE A BETPLAY:\n"
+        f"1. Tu 'pick_principal' DEBE SER OBLIGATORIAMENTE un mercado Estándar Disponible en BetPlay: Ganador Directo (Moneyline), Hándicap Principal (+/- puntos de referencia) o Total de Puntos Principal (Over/Under).\n"
+        f"2. Queda PROHIBIDO proponer líneas teóricas, combinadas complejas o hándicaps inventados que no existan en la oferta comercial regular.\n"
+        f"3. Exige rigor analítico alto (evalúa rotaciones y pretemporada) y asigna una certeza técnica real (>= {UMBRAL_MINIMO_FILTRO}%).\n"
+        f"4. En 'regla_valor_betplay' da la instrucción de tolerancia si BetPlay movió la línea o la cuota en el menú."
     )
 
     try:
@@ -164,7 +166,7 @@ def analizar_partido_baloncesto_ia(partido):
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=AnalisisBaloncestoSchema,
-                temperature=0.10  # Reducimos temperatura para mayor consistencia lógica
+                temperature=0.10
             )
         )
         if res and res.text:
@@ -178,15 +180,15 @@ def analizar_partido_baloncesto_ia(partido):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Filtro 80%): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Mercados Reales BetPlay - Filtro 75%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
-        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados con cuotas para las próximas 12 horas.</i>"
+        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados para las próximas 12 horas.</i>"
         enviar_mensaje_telegram(msg)
         return
 
-    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (FILTRO REFORZADO 80%)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
+    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (BETPLAY READY)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
     partidos_enviados = 0
     descartados_certeza = 0
@@ -221,7 +223,7 @@ def ejecutar_escaneo():
 
     msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos enviados: {partidos_enviados}"
     if partidos_enviados == 0 and descartados_certeza > 0:
-        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) analizados descartados por no alcanzar el {UMBRAL_MINIMO_FILTRO}% de certeza."
+        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por no alcanzar el {UMBRAL_MINIMO_FILTRO}% de certeza."
 
     enviar_mensaje_telegram(msg_resumen)
 
