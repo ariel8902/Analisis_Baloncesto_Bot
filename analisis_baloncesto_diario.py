@@ -8,14 +8,15 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (BALONCESTO BETPLAY REAL)
+# 1. CONFIGURACIÓN Y CREDENCIALES (BALONCESTO - PISO 1.40)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-UMBRAL_MINIMO_FILTRO = 75.0  # FILTRO REALISTA Y EXIGENTE EN MERCADOS COMERCIALES
+UMBRAL_MINIMO_FILTRO = 75.0
+PISO_MINIMO_CUOTA = 1.40  # CANDADO DE RENTABILIDAD
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -31,12 +32,13 @@ LIGAS_BALONCESTO = [
 
 class AnalisisBaloncestoSchema(BaseModel):
     prob_pick_principal: float = Field(description="Probabilidad estimada para la opción principal (0 a 100)")
-    pick_principal: str = Field(description="Mercado principal comercial en BetPlay (ej. Gana Local Moneyline, Handicap +3.5 Local, Over 218.5 Puntos)")
-    regla_valor_betplay: str = Field(description="Instrucción de tolerancia de cuota/línea si BetPlay ajustó la línea comercial.")
+    pick_principal: str = Field(description="Mercado principal comercial en BetPlay (ej. Handicap +3.5 Local, Over 218.5 Puntos)")
+    cuota_estimada_pick: float = Field(description="Cuota decimal aproximada en BetPlay para la opción principal seleccionada.")
+    regla_valor_betplay: str = Field(description="Instrucción de tolerancia de cuota en BetPlay. Exige abstenerse si la cuota es menor a 1.40.")
     stake_principal: str = Field(description="Stake sugerido según la certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
-    pick_cobertura: str = Field(description="Opción de cobertura comercial (ej. Handicap Alternativo o Total Alternativo)")
-    analisis_tactico: str = Field(description="Justificación táctica sin complacencias basada en ritmo, rotaciones y bajas en máx 2 oraciones.")
+    pick_cobertura: str = Field(description="Opción de cobertura comercial en BetPlay")
+    analisis_tactico: str = Field(description="Justificación táctica sin complacencias en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -152,11 +154,10 @@ def analizar_partido_baloncesto_ia(partido):
         f"Cuotas Moneyline: Local ({partido['cuota_local']}) / Visitante ({partido['cuota_visitante']}).\n"
         f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Visitante ({partido['prob_math_visitante']}%).\n"
         f"{info_lineas}\n\n"
-        f"REGLA OBLIGATORIA DE ANCLAJE A BETPLAY:\n"
-        f"1. Tu 'pick_principal' DEBE SER OBLIGATORIAMENTE un mercado Estándar Disponible en BetPlay: Ganador Directo (Moneyline), Hándicap Principal (+/- puntos de referencia) o Total de Puntos Principal (Over/Under).\n"
-        f"2. Queda PROHIBIDO proponer líneas teóricas, combinadas complejas o hándicaps inventados que no existan en la oferta comercial regular.\n"
-        f"3. Exige rigor analítico alto (evalúa rotaciones y pretemporada) y asigna una certeza técnica real (>= {UMBRAL_MINIMO_FILTRO}%).\n"
-        f"4. En 'regla_valor_betplay' da la instrucción de tolerancia si BetPlay movió la línea o la cuota en el menú."
+        f"REGLA DE RENTABILIDAD Y ANCLAJE A BETPLAY:\n"
+        f"1. Tu 'pick_principal' DEBE SER OBLIGATORIAMENTE un mercado disponible en BetPlay (Hándicap Principal, Total de Puntos u Opción Ganadora).\n"
+        f"2. FILTRO PISO DE CUOTA: La 'cuota_estimada_pick' DEBE SER OBLIGATORIAMENTE >= {PISO_MINIMO_CUOTA}. Si la opción principal paga menos de 1.40 (ej. 1.15 - 1.25), busca una línea de Hándicap o Puntos alternativa que garantice cuota >= 1.40, o de lo contrario asigna probabilidad < 75% para descartar el partido.\n"
+        f"3. Exige certeza técnica real (>= {UMBRAL_MINIMO_FILTRO}%)."
     )
 
     try:
@@ -180,7 +181,7 @@ def analizar_partido_baloncesto_ia(partido):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Mercados Reales BetPlay - Filtro 75%): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Piso Cuota 1.40 - Filtro 75%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
@@ -201,8 +202,12 @@ def ejecutar_escaneo():
             continue
 
         prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
-        if prob_max < UMBRAL_MINIMO_FILTRO:
+        cuota_pick = analisis.get("cuota_estimada_pick", 0.0)
+
+        # CANDADO DE RENTABILIDAD: Si la probabilidad es baja O la cuota es menor a 1.40, SE DESCARTA
+        if prob_max < UMBRAL_MINIMO_FILTRO or cuota_pick < PISO_MINIMO_CUOTA:
             descartados_certeza += 1
+            print(f"⛔ Descartado {p['local']} vs {p['visitante']} (Prob: {prob_max}%, Cuota: {cuota_pick})")
             continue
 
         msg = (
@@ -221,9 +226,9 @@ def ejecutar_escaneo():
             partidos_enviados += 1
             print(f"✅ Enviado a Telegram: {p['local']} vs {p['visitante']}")
 
-    msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos enviados: {partidos_enviados}"
+    msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos rentables enviados: {partidos_enviados}"
     if partidos_enviados == 0 and descartados_certeza > 0:
-        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por no alcanzar el {UMBRAL_MINIMO_FILTRO}% de certeza."
+        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por cuota no rentable (< 1.40) o baja certeza."
 
     enviar_mensaje_telegram(msg_resumen)
 
