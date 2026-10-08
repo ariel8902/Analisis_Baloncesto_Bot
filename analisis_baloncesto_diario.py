@@ -8,21 +8,21 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES (RIGOR 75% RESTABLECIDO)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
+# MANTENEMOS EL RIGOR INNEGOCIABLE
 UMBRAL_MINIMO_FILTRO = 75.0
-PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD
+PISO_MINIMO_CUOTA = 1.40
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# Incluye la clave específica para la pretemporada de la NBA y ligas internacionales
 LIGAS_BALONCESTO = [
     {"nombre": "🏀 NBA Pretemporada", "sport_key": "basketball_nba_preseason"},
     {"nombre": "🏀 NBA", "sport_key": "basketball_nba"},
@@ -40,7 +40,7 @@ class AnalisisBaloncestoSchema(BaseModel):
     stake_principal: str = Field(description="Stake sugerido según certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
     pick_cobertura: str = Field(description="Opción de cobertura comercial en BetPlay")
-    analisis_tactico: str = Field(description="Justificación basada en ausencias/bajas de figuras y ritmo de juego en máx 2 oraciones.")
+    analisis_tactico: str = Field(description="Justificación basada en ausencias confirmadas o ventaja cuantitativa en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -117,10 +117,6 @@ def obtener_partidos_baloncesto():
                 prob_impl_home = (1 / c_loc) / ((1 / c_loc) + (1 / c_vis))
                 prob_impl_away = (1 / c_vis) / ((1 / c_loc) + (1 / c_vis))
 
-                # CANDADO DURO EN PYTHON: Descarta si ambas opciones directas pagan < 1.40 sin líneas de handicap/totales
-                if c_loc < PISO_MINIMO_CUOTA and c_vis < PISO_MINIMO_CUOTA and not spread_point and not total_point:
-                    continue
-
                 lista_partidos.append({
                     "liga": liga["nombre"],
                     "equipo_local": home_team,
@@ -140,12 +136,11 @@ def obtener_partidos_baloncesto():
     return lista_partidos
 
 def rastrear_noticias_globales(partidos):
-    """REALIZA UNA ÚNICA BÚSQUEDA WEB GLOBAL PARA EVITAR BLOQUEOS DE TIEMPO EN GITHUB ACTIONS"""
     if not client_gemini or not partidos:
         return "Sin novedades web previas."
 
     resumen = "\n".join([f"- {p['equipo_local']} vs {p['equipo_visitante']} ({p['fecha']})" for p in partidos])
-    query = f"Busca reportes oficiales de lesiones, bajas de jugadores clave de última hora e injury report para los equipos:\n{resumen}"
+    query = f"Busca EXCLUSIVAMENTE bajas/lesiones OFICIALES confirmadas para los equipos:\n{resumen}"
 
     try:
         res = client_gemini.models.generate_content(
@@ -158,7 +153,7 @@ def rastrear_noticias_globales(partidos):
     except Exception as e:
         print("Advertencia en rastreo global:", e)
 
-    return "Información física estándar sin bajas críticas reportadas."
+    return "Sin bajas críticas reportadas."
 
 def analizar_partido_baloncesto_ia(p, noticias_globales):
     if not client_gemini:
@@ -176,13 +171,13 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         f"   - Local: {p['equipo_local']} (Cuota: {p['cuota_local']} | Prob. Desmarginada: {p['prob_real_local']}%)\n"
         f"   - Visitante: {p['equipo_visitante']} (Cuota: {p['cuota_visita']} | Prob. Desmarginada: {p['prob_real_visita']}%)\n"
         f"   - {info_lineas}\n\n"
-        f"2. NOTICIAS EN VIVO Y RASTREO WEB CONSOLIDADO:\n"
+        f"2. REPORTES DE LESIONES/BAJAS CONFIRMADAS:\n"
         f"   {noticias_globales}\n\n"
-        f"REGLAS DE TRIANGULACIÓN INVIOLABLES:\n"
-        f"A. EVALÚA ÚNICAMENTE OPCIONES CON CUOTA REAL >= {PISO_MINIMO_CUOTA}. PROHIBIDO ESTIMAR O SUGERIR CUOTAS MENORES A 1.40.\n"
-        f"B. Prioriza Hándicaps o Totales si ofrecen mayor relación valor/certeza que el Moneyline.\n"
-        f"C. Si hay reporte de bajas de figuras clave o rotación por pretemporada/back-to-back, ajusta la probabilidad a < 75%.\n"
-        f"D. Si la certeza calculada es menor al {UMBRAL_MINIMO_FILTRO}%, descarta el partido inmediatamente."
+        f"INSTRUCCIÓN ANALÍTICA DE EVALUACIÓN:\n"
+        f"A. Basándote en la probabilidad desmarginada y las líneas de Hándicap/Totales, selecciona la opción con mayor fortaleza cuantitativa.\n"
+        f"B. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible. NO reduzcas la certeza por meras especulaciones o por ser pretemporada.\n"
+        f"C. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
+        f"D. Si la opción principal seleccionada (sea ML, Hándicap o Total) alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
     )
 
     try:
@@ -192,7 +187,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=AnalisisBaloncestoSchema,
-                temperature=0.10
+                temperature=0.05
             )
         )
         if res and res.text:
@@ -206,15 +201,14 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo optimizado de Baloncesto (Rastreo Consolidado + NBA Pretemporada): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Rigor Restablecido 75%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
-        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados que cumplan el filtro de cuotas para las próximas 16 horas.</i>"
+        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados en la ventana de tiempo.</i>"
         enviar_mensaje_telegram(msg)
         return
 
-    # PASO RÁPIDO CONSOLIDADO (UN SOLO SEARCH)
     noticias_globales = rastrear_noticias_globales(partidos)
     enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (TRIANGULACIÓN REAL)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
@@ -230,7 +224,7 @@ def ejecutar_escaneo():
         prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
         cuota_evaluada = analisis.get("cuota_evaluada", 0.0)
 
-        # CANDADO DURO EN PYTHON: Si la probabilidad < 75% o la cuota es < 1.40, descarta
+        # CANDADO ESTÁNDAR RIGUROSO: Certeza >= 75.0% y Cuota >= 1.40
         if prob_max < UMBRAL_MINIMO_FILTRO or cuota_evaluada < PISO_MINIMO_CUOTA:
             descartados_certeza += 1
             print(f"⛔ Descartado {p['equipo_local']} vs {p['equipo_visitante']} (Prob: {prob_max}%, Cuota: {cuota_evaluada})")
