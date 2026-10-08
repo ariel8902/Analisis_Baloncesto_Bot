@@ -192,8 +192,8 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         f"   {noticias_globales}\n\n"
         f"INSTRUCCIONES DE FORMATO Y CONTENIDO (SIN STAKE):\n"
         f"A. 'pick_principal': Si eliges Total de Puntos usa exactamente {linea_total_str}. Si eliges Hándicap usa {linea_spread_str}. Si es Ganador usa '[Equipo] Ganador (Moneyline)'.\n"
-        f"B. 'margen_operatividad_universal': Indica brevemente la instrucción de acción en BetPlay (ejemplo: 'Si la línea cambia, seleccionar la opción de cobertura indicada').\n"
-        f"C. 'regla_valor_betplay': Confirma el cumplimiento de cuota real >= 1.40 de la casa (ejemplo: 'Cumplida: cuota de [cuota] supera el piso mínimo de 1.40 en BetPlay').\n"
+        f"B. 'margen_operatividad_universal': Indica brevemente la instrucción de acción en BetPlay (ejemplo: 'Operar en BetPlay mientras la cuota se mantenga en 1.50 o superior; si desciende, ejecutar cobertura').\n"
+        f"C. 'regla_valor_betplay': Confirma la cuota real evaluada >= 1.40 (ejemplo: 'Cumplida: cuota de [cuota] supera el piso mínimo de 1.40 en BetPlay').\n"
         f"D. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible.\n"
         f"E. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
         f"F. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
@@ -255,6 +255,9 @@ def ejecutar_escaneo():
         exito_envio = enviar_mensaje_telegram(msg)
         if exito_envio:
             partidos_enviados += 1
+
+    # PAUSA DE SEGURIDAD PARA GARANTIZAR ENTREGA EN TELEGRAM
+    time.sleep(1)
 
     msg_resumen = (
         f"🏁 <b>ESCANEO DE BALONCESTO FINALIZADO</b>\n"
