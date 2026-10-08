@@ -9,13 +9,19 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. PARCHE DE INFRAESTRUCTURA: FORZAR IPV4 EN GITHUB ACTIONS
+# 1. PARCHE DEFINITIVO DE RED: DESACTIVAR IPV6 A NIVEL DE SOCKET Y URLLIB3
 # ---------------------------------------------------------
-orig_getaddrinfo = socket.getaddrinfo
-def getaddrinfo_ipv4_only(*args, **kwargs):
-    responses = orig_getaddrinfo(*args, **kwargs)
-    return [res for res in responses if res[0] == socket.AF_INET]
-socket.getaddrinfo = getaddrinfo_ipv4_only
+old_getaddrinfo = socket.getaddrinfo
+def new_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    return [response for response in responses if response[0] == socket.AF_INET]
+socket.getaddrinfo = new_getaddrinfo
+
+try:
+    import urllib3.util.connection as urllib3_cn
+    urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
+except ImportError:
+    pass
 
 # ---------------------------------------------------------
 # 2. CONFIGURACIÓN Y CREDENCIALES
@@ -34,7 +40,7 @@ if GEMINI_API_KEY:
     try:
         client_gemini = genai.Client(
             api_key=GEMINI_API_KEY,
-            http_options={'timeout': 15.0}
+            http_options={'timeout': 20.0}
         )
     except Exception as e:
         print("Error inicializando cliente Gemini:", e)
@@ -221,7 +227,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Rigor 75% + Parche IPv4): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Rigor 75% + Parche Dual IPv4): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
