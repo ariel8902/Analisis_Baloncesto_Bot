@@ -10,7 +10,7 @@ on:
 jobs:
   analisis_baloncesto:
     runs-on: ubuntu-latest
-    timeout-minutes: 5  # <-- Límite de seguridad: Cancela si supera los 5 minutos
+    timeout-minutes: 10  # <-- CORRECCIÓN APLICADA: Elevado de 5 a 10 minutos para evitar cierres abruptos
     steps:
       - name: Descargar Código
         uses: actions/checkout@v4
