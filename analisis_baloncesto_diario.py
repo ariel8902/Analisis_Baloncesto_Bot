@@ -16,30 +16,29 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
 UMBRAL_MINIMO_FILTRO = 75.0
-PISO_MINIMO_CUOTA = 1.40  # CANDADO DE RENTABILIDAD
+PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
 LIGAS_BALONCESTO = [
-    {"nombre": "🏀 NBA Preseason", "sport_key": "basketball_nba_preseason"},
-    {"nombre": "🏀 NBA Regular", "sport_key": "basketball_nba"},
-    {"nombre": "🇪🇺 Euroleague", "sport_key": "basketball_euroleague"},
-    {"nombre": "🇪🇸 Liga Endesa (España)", "sport_key": "basketball_spain_liga_endesa"},
-    {"nombre": "🎓 NCAA Baloncesto", "sport_key": "basketball_ncaab"}
+    {"nombre": "🏀 NBA", "sport_key": "basketball_nba"},
+    {"nombre": "🏀 Euroliga", "sport_key": "basketball_euroleague"},
+    {"nombre": "🏀 Liga ACB España", "sport_key": "basketball_spain_acb"},
+    {"nombre": "🏀 NBL Australia", "sport_key": "basketball_nbl"}
 ]
 
 class AnalisisBaloncestoSchema(BaseModel):
     prob_pick_principal: float = Field(description="Probabilidad estimada final (0 a 100)")
-    pick_principal: str = Field(description="Mercado comercial exacto evaluado (ej. Handicap -5.5, Over 218.5, Gana Local ML)")
-    cuota_evaluada: float = Field(description="Cuota decimal real evaluada provista por BetPlay.")
-    margen_operatividad_universal: str = Field(description="Instrucción del rango aceptable en BetPlay y cuándo ABSTENERSE por pérdida de valor.")
-    regla_valor_betplay: str = Field(description="Regla de cuota en BetPlay. Exige abstenerse si cae de 1.40.")
+    pick_principal: str = Field(description="Mercado comercial exacto en BetPlay (ej. Gana Local ML, Handicap -4.5, Total Over 215.5)")
+    cuota_evaluada: float = Field(description="Cuota decimal real evaluada provista por BetPlay/Kambi.")
+    margen_operatividad_universal: str = Field(description="Instrucción del rango aceptable de cuota/línea en BetPlay y cuándo ABSTENERSE.")
+    regla_valor_betplay: str = Field(description="Regla de cuota en BetPlay. Exige abstenerse si cae por debajo de 1.40.")
     stake_principal: str = Field(description="Stake sugerido según certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
     pick_cobertura: str = Field(description="Opción de cobertura comercial en BetPlay")
-    analisis_tactico: str = Field(description="Justificación táctica basada en la triangulación de noticias en vivo y cuota real en máx 2 oraciones.")
+    analisis_tactico: str = Field(description="Justificación basada en ausencias/bajas de figuras y ritmo de juego en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -54,14 +53,6 @@ def enviar_mensaje_telegram(texto):
         print("Error enviando mensaje a Telegram:", e)
         return False
 
-def calcular_probabilidad_implicita(cuota_local, cuota_visitante):
-    if not cuota_local or not cuota_visitante:
-        return 50.0, 50.0
-    p_loc = 1.0 / cuota_local
-    p_vis = 1.0 / cuota_visitante
-    margen = p_loc + p_vis
-    return round((p_loc / margen) * 100, 1), round((p_vis / margen) * 100, 1)
-
 def obtener_partidos_baloncesto():
     if not ODDS_API_KEY:
         print("Error: ODDS_API_KEY no configurada.")
@@ -69,7 +60,7 @@ def obtener_partidos_baloncesto():
 
     lista_partidos = []
     ahora_utc = datetime.now(timezone.utc)
-    fin_ventana_utc = ahora_utc + timedelta(hours=12)
+    fin_ventana_utc = ahora_utc + timedelta(hours=14)
 
     for liga in LIGAS_BALONCESTO:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -80,7 +71,7 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            res = requests.get(url, params=params, timeout=5)
+            res = requests.get(url, params=params, timeout=6)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -116,39 +107,43 @@ def obtener_partidos_baloncesto():
                         elif m.get("key") == "totals":
                             outcomes = m.get("outcomes", [])
                             if outcomes: total_point = outcomes[0].get("point")
-                
+
                 if not c_loc or not c_vis:
                     continue
-                
-                # FILTRO DURO DE CUOTA EN PYTHON: Al menos una opción debe pagar >= 1.40
-                if c_loc < PISO_MINIMO_CUOTA and c_vis < PISO_MINIMO_CUOTA:
+
+                # DESMARGINADO MATEMÁTICO EN PYTHON
+                prob_impl_home = (1 / c_loc) / ((1 / c_loc) + (1 / c_vis))
+                prob_impl_away = (1 / c_vis) / ((1 / c_loc) + (1 / c_vis))
+
+                # CANDADO DURO EN PYTHON: Descarta si ambas opciones directas pagan < 1.40 sin líneas de handicap/totales
+                if c_loc < PISO_MINIMO_CUOTA and c_vis < PISO_MINIMO_CUOTA and not spread_point and not total_point:
                     continue
 
-                p_loc, p_vis = calcular_probabilidad_implicita(c_loc, c_vis)
                 lista_partidos.append({
                     "liga": liga["nombre"],
-                    "local": home_team,
-                    "visitante": away_team,
+                    "equipo_local": home_team,
+                    "equipo_visitante": away_team,
                     "fecha": dt_colombia.strftime("%Y-%m-%d"),
                     "hora": dt_colombia.strftime("%I:%M %p"),
                     "cuota_local": c_loc,
-                    "cuota_visitante": c_vis,
+                    "cuota_visita": c_vis,
+                    "prob_real_local": round(prob_impl_home * 100, 1),
+                    "prob_real_visita": round(prob_impl_away * 100, 1),
                     "spread_point": spread_point,
-                    "total_point": total_point,
-                    "prob_math_local": p_loc,
-                    "prob_math_visitante": p_vis
+                    "total_point": total_point
                 })
             time.sleep(0.2)
         except Exception as e:
-            print(f"Error al consultar {liga['nombre']}:", e)
+            print(f"Error consultando {liga['nombre']}:", e)
     return lista_partidos
 
 def rastrear_noticias_globales(partidos):
+    """REALIZA UNA ÚNICA BÚSQUEDA WEB GLOBAL PARA EVITAR BLOQUEOS DE TIEMPO EN GITHUB ACTIONS"""
     if not client_gemini or not partidos:
-        return "Sin novedades encontradas."
+        return "Sin novedades web previas."
 
-    resumen = "\n".join([f"- {p['local']} vs {p['visitante']} ({p['fecha']})" for p in partidos])
-    query = f"Busca novedades oficiales de lesión, resting, minutos restringidos y alineaciones confirmadas para:\n{resumen}"
+    resumen = "\n".join([f"- {p['equipo_local']} vs {p['equipo_visitante']} ({p['fecha']})" for p in partidos])
+    query = f"Busca reportes oficiales de lesiones, bajas de jugadores clave de última hora e injury report para los equipos:\n{resumen}"
 
     try:
         res = client_gemini.models.generate_content(
@@ -161,30 +156,31 @@ def rastrear_noticias_globales(partidos):
     except Exception as e:
         print("Advertencia en rastreo global:", e)
 
-    return "Información médica y táctica estándar."
+    return "Información física estándar sin bajas críticas reportadas."
 
-def analizar_partido_baloncesto_ia(partido, noticias_globales):
+def analizar_partido_baloncesto_ia(p, noticias_globales):
     if not client_gemini:
         return None, "IA no configurada"
 
     info_lineas = ""
-    if partido.get("spread_point") is not None:
-        info_lineas += f"Hándicap de Referencia BetPlay: {partido['spread_point']}. "
-    if partido.get("total_point") is not None:
-        info_lineas += f"Línea de Totales BetPlay: {partido['total_point']}. "
+    if p.get("spread_point") is not None:
+        info_lineas += f"Línea Hándicap BetPlay: {p['spread_point']}. "
+    if p.get("total_point") is not None:
+        info_lineas += f"Línea Total Puntos BetPlay: {p['total_point']}. "
 
     prompt_triangulacion = (
-        f"EVALUACIÓN DE TRIANGULACIÓN REAL ({partido['local']} vs {partido['visitante']}):\n\n"
-        f"1. DATOS FINANCIEROS REALES DE BETPLAY (PROVISTOS POR PYTHON):\n"
-        f"   - Cuotas ML Reales: Local ({partido['cuota_local']}) / Visitante ({partido['cuota_visitante']}).\n"
-        f"   - Prob. Desmarginada Implícita: Local ({partido['prob_math_local']}%), Visitante ({partido['prob_math_visitante']}%).\n"
+        f"EVALUACIÓN DE TRIANGULACIÓN DE BALONCESTO ({p['equipo_local']} vs {p['equipo_visitante']} - {p['liga']}):\n\n"
+        f"1. DATOS FINANCIEROS REALES DE BETPLAY/KAMBI (PROVISTOS POR PYTHON):\n"
+        f"   - Local: {p['equipo_local']} (Cuota: {p['cuota_local']} | Prob. Desmarginada: {p['prob_real_local']}%)\n"
+        f"   - Visitante: {p['equipo_visitante']} (Cuota: {p['cuota_visita']} | Prob. Desmarginada: {p['prob_real_visita']}%)\n"
         f"   - {info_lineas}\n\n"
         f"2. NOTICIAS EN VIVO Y RASTREO WEB CONSOLIDADO:\n"
         f"   {noticias_globales}\n\n"
-        f"REGLAS INVIOLABLES DE TRIANGULACIÓN:\n"
-        f"A. EVALÚA ÚNICAMENTE OPCIONES CON CUOTA REAL >= {PISO_MINIMO_CUOTA}. PROHIBIDO INVENTAR O ESTIMAR CUOTAS MENORES A 1.40.\n"
-        f"B. Cruza las noticias reales con la cuota de BetPlay. Si la cuota contradice las noticias o hay dudas de rotación, asigna probabilidad < 75%.\n"
-        f"C. Si la certeza es menor al {UMBRAL_MINIMO_FILTRO}%, se descartará automáticamente."
+        f"REGLAS DE TRIANGULACIÓN INVIOLABLES:\n"
+        f"A. EVALÚA ÚNICAMENTE OPCIONES CON CUOTA REAL >= {PISO_MINIMO_CUOTA}. PROHIBIDO ESTIMAR O SUGERIR CUOTAS MENORES A 1.40.\n"
+        f"B. Prioriza Hándicaps o Totales si ofrecen mayor relación valor/certeza que el Moneyline.\n"
+        f"C. Si hay reporte de bajas de figuras clave o fatiga por Back-to-Back, ajusta la probabilidad a < 75%.\n"
+        f"D. Si la certeza calculada es menor al {UMBRAL_MINIMO_FILTRO}%, descarta el partido inmediatamente."
     )
 
     try:
@@ -200,7 +196,7 @@ def analizar_partido_baloncesto_ia(partido, noticias_globales):
         if res and res.text:
             return json.loads(res.text), "OK"
     except Exception as e:
-        print(f"Error evaluando {partido['local']} vs {partido['visitante']}: {e}")
+        print(f"Error evaluando {p['equipo_local']} vs {p['equipo_visitante']}: {e}")
         return None, str(e)
 
     return None, "ERROR_GENERAL"
@@ -208,14 +204,15 @@ def analizar_partido_baloncesto_ia(partido, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Cuotas Reales + Grounding): {fecha_hora_col}")
+    print(f"Iniciando escaneo optimizado de Baloncesto (Rastreo Consolidado + Piso 1.40): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
-        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados que cumplan filtro de cuotas (>= 1.40) en las próximas 12 horas.</i>"
+        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados que cumplan el filtro de cuotas para las próximas 14 horas.</i>"
         enviar_mensaje_telegram(msg)
         return
 
+    # PASO RÁPIDO CONSOLIDADO (UN SOLO SEARCH)
     noticias_globales = rastrear_noticias_globales(partidos)
     enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (TRIANGULACIÓN REAL)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
@@ -231,20 +228,21 @@ def ejecutar_escaneo():
         prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
         cuota_evaluada = analisis.get("cuota_evaluada", 0.0)
 
-        # CANDADO DURO DE RENTABILIDAD Y CERTEZA EN PYTHON
+        # CANDADO DURO EN PYTHON: Si la probabilidad < 75% o la cuota es < 1.40, descarta
         if prob_max < UMBRAL_MINIMO_FILTRO or cuota_evaluada < PISO_MINIMO_CUOTA:
             descartados_certeza += 1
-            print(f"⛔ Descartado {p['local']} vs {p['visitante']} (Prob: {prob_max}%, Cuota Real: {cuota_evaluada})")
+            print(f"⛔ Descartado {p['equipo_local']} vs {p['equipo_visitante']} (Prob: {prob_max}%, Cuota: {cuota_evaluada})")
             continue
 
         msg = (
-            f"🏀 <b>{p['liga']}</b> | {p['local']} vs {p['visitante']}\n"
+            f"🏀 <b>{p['liga']}</b>\n"
+            f"⚔️ <b>{p['equipo_local']} vs {p['equipo_visitante']}</b>\n"
             f"📅 <b>Fecha:</b> <code>{p['fecha']}</code> | ⏰ <b>Hora Col:</b> <code>{p['hora']}</code>\n"
-            f"💰 <b>Cuotas ML BetPlay:</b> <code>{p['cuota_local']} - {p['cuota_visitante']}</code>\n\n"
+            f"💰 <b>Cuotas ML BetPlay:</b> <code>{p['cuota_local']} - {p['cuota_visita']}</code>\n\n"
             f"🎯 <b>APUESTA PRINCIPAL: {analisis['pick_principal']}</b> (<code>Cuota: {cuota_evaluada}</code>)\n"
             f"📏 <b>Margen de Operatividad BetPlay:</b> <i>{analisis['margen_operatividad_universal']}</i>\n"
-            f"📲 <b>Regla de Valor BetPlay:</b> <i>{analisis['regla_valor_betplay']}</i>\n"
-            f"📊 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code> | <b>Stake:</b> <code>{analisis['stake_principal']}</code>\n"
+            f"📲 <b>Regla de Validación BetPlay:</b> <i>{analisis['regla_valor_betplay']}</i>\n"
+            f"📈 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code> | <b>Stake:</b> <code>{analisis['stake_principal']}</code>\n"
             f"💡 <i>[Gemini Triangulado] {analisis['analisis_tactico']}</i>\n\n"
             f"🛡 <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
         )
@@ -255,7 +253,7 @@ def ejecutar_escaneo():
 
     msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos rentables enviados: {partidos_enviados}"
     if descartados_certeza > 0:
-        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por triangulación o cuota < 1.40."
+        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por falta de certeza o cuota < 1.40."
 
     enviar_mensaje_telegram(msg_resumen)
 
