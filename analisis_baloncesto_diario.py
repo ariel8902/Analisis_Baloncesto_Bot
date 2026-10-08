@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (PRECISIÓN RIGUROSA BETPLAY)
+# 1. CONFIGURACIÓN Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -133,7 +133,6 @@ def llamar_gemini_rest(prompt):
             "cuota_evaluada": {"type": "NUMBER"},
             "margen_operatividad_universal": {"type": "STRING"},
             "regla_valor_betplay": {"type": "STRING"},
-            "stake_principal": {"type": "STRING"},
             "prob_cobertura": {"type": "NUMBER"},
             "pick_cobertura": {"type": "STRING"},
             "analisis_tactico": {"type": "STRING"}
@@ -141,7 +140,7 @@ def llamar_gemini_rest(prompt):
         "required": [
             "prob_pick_principal", "pick_principal", "cuota_evaluada",
             "margen_operatividad_universal", "regla_valor_betplay",
-            "stake_principal", "prob_cobertura", "pick_cobertura", "analisis_tactico"
+            "prob_cobertura", "pick_cobertura", "analisis_tactico"
         ]
     }
 
@@ -191,10 +190,10 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         f"   - LÍNEA EXACTA HÁNDICAP BETPLAY: {linea_spread_str}\n\n"
         f"2. REPORTES DE LESIONES/BAJAS CONFIRMADAS:\n"
         f"   {noticias_globales}\n\n"
-        f"REGLAS DE PRECISIÓN ABSOLUTA PARA BETPLAY:\n"
-        f"A. Si eliges un mercado de Total de Puntos (Over/Under), el texto de 'pick_principal' DEBE usar EXACTAMENTE la cifra {linea_total_str} (ejemplo: 'Menos de {linea_total_str} Puntos Totales'). ESTÁ PROHIBIDO MODIFICAR O REDONDEAR LA LÍNEA.\n"
-        f"B. Si eliges un mercado de Hándicap, DEBES usar EXACTAMENTE la cifra {linea_spread_str}.\n"
-        f"C. Si eliges Ganador del Partido, usa la nomenclatura exacta de BetPlay: '[Nombre Equipo] Ganador (Moneyline)'.\n"
+        f"INSTRUCCIONES DE FORMATO Y CONTENIDO (SIN STAKE):\n"
+        f"A. 'pick_principal': Si eliges Total de Puntos usa exactamente {linea_total_str}. Si eliges Hándicap usa {linea_spread_str}. Si es Ganador usa '[Equipo] Ganador (Moneyline)'.\n"
+        f"B. 'margen_operatividad_universal': Indica brevemente la instrucción de acción en BetPlay (ejemplo: 'Si la línea cambia, seleccionar la opción de cobertura indicada').\n"
+        f"C. 'regla_valor_betplay': Confirma el cumplimiento de cuota real >= 1.40 de la casa (ejemplo: 'Cumplida: cuota de [cuota] supera el piso mínimo de 1.40 en BetPlay').\n"
         f"D. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible.\n"
         f"E. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
         f"F. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
@@ -248,7 +247,7 @@ def ejecutar_escaneo():
             f"🎯 <b>APUESTA PRINCIPAL: {analisis['pick_principal']}</b> (<code>Cuota: {cuota_evaluada}</code>)\n"
             f"📏 <b>Margen de Operatividad BetPlay:</b> <i>{analisis['margen_operatividad_universal']}</i>\n"
             f"📲 <b>Regla de Validación BetPlay:</b> <i>{analisis['regla_valor_betplay']}</i>\n"
-            f"📈 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code> | <b>Stake:</b> <code>{analisis['stake_principal']}</code>\n"
+            f"📈 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code>\n"
             f"💡 <i>[Gemini Triangulado] {analisis['analisis_tactico']}</i>\n\n"
             f"🛡 <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
         )
@@ -257,9 +256,13 @@ def ejecutar_escaneo():
         if exito_envio:
             partidos_enviados += 1
 
-    msg_resumen = f"<b>Escaneo baloncesto completado.</b> Pronósticos rentables enviados: {partidos_enviados}"
-    if descartados_certeza > 0:
-        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por falta de certeza o cuota < 1.40."
+    msg_resumen = (
+        f"🏁 <b>ESCANEO DE BALONCESTO FINALIZADO</b>\n"
+        f"📅 <i>{fecha_hora_col}</i>\n\n"
+        f"📊 <b>Pronósticos rentables enviados:</b> {partidos_enviados}\n"
+        f"⛔ <b>Eventos descartados (<75% o cuota <1.40):</b> {descartados_certeza}\n\n"
+        f"<i>Proceso completado exitosamente.</i>"
+    )
 
     enviar_mensaje_telegram(msg_resumen)
 
