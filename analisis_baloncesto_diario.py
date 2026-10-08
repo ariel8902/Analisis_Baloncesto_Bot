@@ -3,9 +3,11 @@ import json
 import time
 import requests
 from datetime import datetime, timezone, timedelta
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES (SIN FALENCIAS)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -26,6 +28,10 @@ LIGAS_BALONCESTO = [
     {"nombre": "🏀 NBL Australia", "sport_key": "basketball_nbl"}
 ]
 
+session = requests.Session()
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+session.mount('https://', HTTPAdapter(max_retries=retries))
+
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Credenciales de Telegram no configuradas.")
@@ -33,7 +39,7 @@ def enviar_mensaje_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        res = requests.post(url, json=payload, timeout=10)
+        res = session.post(url, json=payload, timeout=10)
         return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
@@ -57,7 +63,7 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            res = requests.get(url, params=params, timeout=10)
+            res = session.get(url, params=params, timeout=10)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -70,29 +76,42 @@ def obtener_partidos_baloncesto():
                     continue
 
                 dt_colombia = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                home_team, away_team = ev.get("home_team"), ev.get("away_team")
+                home_team = str(ev.get("home_team", "")).strip()
+                away_team = str(ev.get("away_team", "")).strip()
                 c_loc, c_vis = None, None
                 spread_point, total_point = None, None
                 
                 bookmakers = ev.get("bookmakers", [])
                 if bookmakers:
+                    # Prioridad absoluta a Kambi/Unibet, respaldo en bookmakers compatibles
                     bm_seleccionado = bookmakers[0]
                     for bm in bookmakers:
-                        if bm.get("key") in ["unibet", "unibet_eu", "888sport"]:
+                        if bm.get("key") in ["unibet", "unibet_eu", "888sport", "pinnacle", "williamhill"]:
                             bm_seleccionado = bm
                             break
 
                     for m in bm_seleccionado.get("markets", []):
                         if m.get("key") == "h2h":
                             for o in m.get("outcomes", []):
-                                if o.get("name") == home_team: c_loc = o.get("price")
-                                elif o.get("name") == away_team: c_vis = o.get("price")
+                                name_out = str(o.get("name", "")).strip().lower()
+                                if name_out == home_team.lower():
+                                    c_loc = o.get("price")
+                                elif name_out == away_team.lower():
+                                    c_vis = o.get("price")
                         elif m.get("key") == "spreads":
                             for o in m.get("outcomes", []):
-                                if o.get("name") == home_team: spread_point = o.get("point")
+                                name_out = str(o.get("name", "")).strip().lower()
+                                if name_out == home_team.lower():
+                                    spread_point = o.get("point")
+                                elif name_out == away_team.lower() and spread_point is None:
+                                    # Si viene desde la perspectiva del visitante, invertimos el signo para el local
+                                    val_point = o.get("point")
+                                    if val_point is not None:
+                                        spread_point = -val_point
                         elif m.get("key") == "totals":
                             outcomes = m.get("outcomes", [])
-                            if outcomes: total_point = outcomes[0].get("point")
+                            if outcomes:
+                                total_point = outcomes[0].get("point")
 
                 if not c_loc or not c_vis:
                     continue
@@ -154,7 +173,7 @@ def llamar_gemini_rest(prompt):
     }
 
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
+        res = session.post(url, headers=headers, json=payload, timeout=30)
         if res.status_code == 200:
             datos = res.json()
             texto_json = datos['candidates'][0]['content']['parts'][0]['text']
@@ -183,17 +202,17 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 
     prompt_triangulacion = (
         f"EVALUACIÓN DE TRIANGULACIÓN DE BALONCESTO ({p['equipo_local']} vs {p['equipo_visitante']} - {p['liga']}):\n\n"
-        f"1. DATOS FINANCIEROS REALES DE BETPLAY/KAMBI (OBLIGATORIOS Y EXACTOS):\n"
-        f"   - Local: {p['equipo_local']} (Cuota Ganador ML: {p['cuota_local']} | Prob. Desmarginada: {p['prob_real_local']}%)\n"
-        f"   - Visitante: {p['equipo_visitante']} (Cuota Ganador ML: {p['cuota_visita']} | Prob. Desmarginada: {p['prob_real_visita']}%)\n"
+        f"1. DATOS FINANCIEROS REALES DE BETPLAY/KAMBI (MAPEO ESTRICTO):\n"
+        f"   - LOCAL: {p['equipo_local']} (Cuota ML: {p['cuota_local']} | Prob. Desmarginada: {p['prob_real_local']}%)\n"
+        f"   - VISITANTE: {p['equipo_visitante']} (Cuota ML: {p['cuota_visita']} | Prob. Desmarginada: {p['prob_real_visita']}%)\n"
         f"   - LÍNEA EXACTA TOTAL PUNTOS BETPLAY: {linea_total_str}\n"
-        f"   - LÍNEA EXACTA HÁNDICAP BETPLAY: {linea_spread_str}\n\n"
+        f"   - LÍNEA EXACTA HÁNDICAP LOCAL BETPLAY: {linea_spread_str}\n\n"
         f"2. REPORTES DE LESIONES/BAJAS CONFIRMADAS:\n"
         f"   {noticias_globales}\n\n"
-        f"INSTRUCCIONES DE FORMATO Y CONTENIDO (SIN STAKE):\n"
-        f"A. 'pick_principal': Si eliges Total de Puntos usa exactamente {linea_total_str}. Si eliges Hándicap usa {linea_spread_str}. Si es Ganador usa '[Equipo] Ganador (Moneyline)'.\n"
-        f"B. 'margen_operatividad_universal': Indica brevemente la instrucción de acción en BetPlay (ejemplo: 'Operar en BetPlay mientras la cuota se mantenga en 1.50 o superior; si desciende, ejecutar cobertura').\n"
-        f"C. 'regla_valor_betplay': Confirma la cuota real evaluada >= 1.40 (ejemplo: 'Cumplida: cuota de [cuota] supera el piso mínimo de 1.40 en BetPlay').\n"
+        f"INSTRUCCIONES OBLIGATORIAS:\n"
+        f"A. 'pick_principal': Asigna la cuota real que corresponde al equipo o línea seleccionada. PROHIBIDO CRUZAR CUOTAS ENTRE LOCAL Y VISITANTE.\n"
+        f"B. 'margen_operatividad_universal': Indica brevemente la instrucción de acción en BetPlay si la cuota oscila.\n"
+        f"C. 'regla_valor_betplay': Confirma cumplimiento de cuota real >= 1.40.\n"
         f"D. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible.\n"
         f"E. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
         f"F. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
@@ -210,7 +229,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Conexión REST Directa gemini-3.8-flash - Rigor 75%): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Lógica de Mapeo Blindada gemini-3.8-flash): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
@@ -255,19 +274,6 @@ def ejecutar_escaneo():
         exito_envio = enviar_mensaje_telegram(msg)
         if exito_envio:
             partidos_enviados += 1
-
-    # PAUSA DE SEGURIDAD PARA GARANTIZAR ENTREGA EN TELEGRAM
-    time.sleep(1)
-
-    msg_resumen = (
-        f"🏁 <b>ESCANEO DE BALONCESTO FINALIZADO</b>\n"
-        f"📅 <i>{fecha_hora_col}</i>\n\n"
-        f"📊 <b>Pronósticos rentables enviados:</b> {partidos_enviados}\n"
-        f"⛔ <b>Eventos descartados (<75% o cuota <1.40):</b> {descartados_certeza}\n\n"
-        f"<i>Proceso completado exitosamente.</i>"
-    )
-
-    enviar_mensaje_telegram(msg_resumen)
 
 if __name__ == "__main__":
     ejecutar_escaneo()
