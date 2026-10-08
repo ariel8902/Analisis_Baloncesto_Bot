@@ -7,7 +7,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (SIN FALENCIAS)
+# 1. CONFIGURACIÓN Y CREDENCIALES (VENTANA 12H + BLINDAJE 503)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -29,7 +29,7 @@ LIGAS_BALONCESTO = [
 ]
 
 session = requests.Session()
-retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
 def enviar_mensaje_telegram(texto):
@@ -52,7 +52,8 @@ def obtener_partidos_baloncesto():
 
     lista_partidos = []
     ahora_utc = datetime.now(timezone.utc)
-    fin_ventana_utc = ahora_utc + timedelta(hours=18)
+    # AJUSTE ESTRICTO: VENTANA DE 12 HORAS EXACTAS
+    fin_ventana_utc = ahora_utc + timedelta(hours=12)
 
     for liga in LIGAS_BALONCESTO:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -83,7 +84,6 @@ def obtener_partidos_baloncesto():
                 
                 bookmakers = ev.get("bookmakers", [])
                 if bookmakers:
-                    # Prioridad absoluta a Kambi/Unibet, respaldo en bookmakers compatibles
                     bm_seleccionado = bookmakers[0]
                     for bm in bookmakers:
                         if bm.get("key") in ["unibet", "unibet_eu", "888sport", "pinnacle", "williamhill"]:
@@ -104,7 +104,6 @@ def obtener_partidos_baloncesto():
                                 if name_out == home_team.lower():
                                     spread_point = o.get("point")
                                 elif name_out == away_team.lower() and spread_point is None:
-                                    # Si viene desde la perspectiva del visitante, invertimos el signo para el local
                                     val_point = o.get("point")
                                     if val_point is not None:
                                         spread_point = -val_point
@@ -172,16 +171,24 @@ def llamar_gemini_rest(prompt):
         }
     }
 
-    try:
-        res = session.post(url, headers=headers, json=payload, timeout=30)
-        if res.status_code == 200:
-            datos = res.json()
-            texto_json = datos['candidates'][0]['content']['parts'][0]['text']
-            return json.loads(texto_json)
-        else:
-            print(f"Error HTTP Gemini REST: {res.status_code} - {res.text}")
-    except Exception as e:
-        print(f"Excepción en llamada REST a Gemini: {e}")
+    # MANEJO DE SATURACIÓN 503
+    for intento in range(3):
+        try:
+            res = session.post(url, headers=headers, json=payload, timeout=30)
+            if res.status_code == 200:
+                datos = res.json()
+                texto_json = datos['candidates'][0]['content']['parts'][0]['text']
+                return json.loads(texto_json)
+            elif res.status_code == 503:
+                print(f"Intento {intento + 1}: Servidor saturado (503). Esperando 3 segundos...")
+                time.sleep(3)
+            else:
+                print(f"Error HTTP Gemini REST: {res.status_code} - {res.text}")
+                break
+        except Exception as e:
+            print(f"Excepción en llamada REST (Intento {intento + 1}): {e}")
+            time.sleep(2)
+            
     return None
 
 def rastrear_noticias_globales(partidos):
@@ -229,11 +236,11 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Lógica de Mapeo Blindada gemini-3.8-flash): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Ventana de 12 Horas gemini-3.8-flash): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
-        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados en la ventana de tiempo.</i>"
+        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados en las próximas 12 horas.</i>"
         enviar_mensaje_telegram(msg)
         return
 
