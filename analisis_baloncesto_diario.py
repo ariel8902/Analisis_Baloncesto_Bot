@@ -8,16 +8,15 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (RIGOR 75% RESTABLECIDO)
+# 1. CONFIGURACIÓN Y CREDENCIALES (BLINDAJE DE TIEMPO)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# MANTENEMOS EL RIGOR INNEGOCIABLE
 UMBRAL_MINIMO_FILTRO = 75.0
-PISO_MINIMO_CUOTA = 1.40
+PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -73,7 +72,7 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            res = requests.get(url, params=params, timeout=6)
+            res = requests.get(url, params=params, timeout=5)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -113,7 +112,6 @@ def obtener_partidos_baloncesto():
                 if not c_loc or not c_vis:
                     continue
 
-                # DESMARGINADO MATEMÁTICO EN PYTHON
                 prob_impl_home = (1 / c_loc) / ((1 / c_loc) + (1 / c_vis))
                 prob_impl_away = (1 / c_vis) / ((1 / c_loc) + (1 / c_vis))
 
@@ -130,7 +128,7 @@ def obtener_partidos_baloncesto():
                     "spread_point": spread_point,
                     "total_point": total_point
                 })
-            time.sleep(0.2)
+            time.sleep(0.1)
         except Exception as e:
             print(f"Error consultando {liga['nombre']}:", e)
     return lista_partidos
@@ -175,12 +173,13 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         f"   {noticias_globales}\n\n"
         f"INSTRUCCIÓN ANALÍTICA DE EVALUACIÓN:\n"
         f"A. Basándote en la probabilidad desmarginada y las líneas de Hándicap/Totales, selecciona la opción con mayor fortaleza cuantitativa.\n"
-        f"B. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible. NO reduzcas la certeza por meras especulaciones o por ser pretemporada.\n"
+        f"B. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible.\n"
         f"C. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
-        f"D. Si la opción principal seleccionada (sea ML, Hándicap o Total) alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
+        f"D. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
     )
 
     try:
+        # Se añade timeout estricto de 12 segundos para no colgar GitHub Actions
         res = client_gemini.models.generate_content(
             model=MODELO_GEMINI,
             contents=prompt_triangulacion,
@@ -193,7 +192,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         if res and res.text:
             return json.loads(res.text), "OK"
     except Exception as e:
-        print(f"Error evaluando {p['equipo_local']} vs {p['equipo_visitante']}: {e}")
+        print(f"Error o Tiempo Agotado evaluando {p['equipo_local']} vs {p['equipo_visitante']}: {e}")
         return None, str(e)
 
     return None, "ERROR_GENERAL"
@@ -209,13 +208,16 @@ def ejecutar_escaneo():
         enviar_mensaje_telegram(msg)
         return
 
-    noticias_globales = rastrear_noticias_globales(partidos)
+    # MÁXIMO 10 PARTIDOS POR EJECUCIÓN PARA GARANTIZAR FINALIZACIÓN EN < 2 MINUTOS
+    partidos_recortados = partidos[:10]
+
+    noticias_globales = rastrear_noticias_globales(partidos_recortados)
     enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (TRIANGULACIÓN REAL)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
     partidos_enviados = 0
     descartados_certeza = 0
 
-    for p in partidos:
+    for p in partidos_recortados:
         analisis, estado = analizar_partido_baloncesto_ia(p, noticias_globales)
 
         if not analisis:
@@ -224,7 +226,6 @@ def ejecutar_escaneo():
         prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
         cuota_evaluada = analisis.get("cuota_evaluada", 0.0)
 
-        # CANDADO ESTÁNDAR RIGUROSO: Certeza >= 75.0% y Cuota >= 1.40
         if prob_max < UMBRAL_MINIMO_FILTRO or cuota_evaluada < PISO_MINIMO_CUOTA:
             descartados_certeza += 1
             print(f"⛔ Descartado {p['equipo_local']} vs {p['equipo_visitante']} (Prob: {prob_max}%, Cuota: {cuota_evaluada})")
