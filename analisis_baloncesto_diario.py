@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES (PRECISIÓN RIGUROSA BETPLAY)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -16,7 +16,6 @@ UMBRAL_MINIMO_FILTRO = 75.0
 PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-# MODELO EXIGIDO Y FIJADO EN EL SISTEMA
 MODELO_GEMINI = "gemini-3.8-flash"
 
 LIGAS_BALONCESTO = [
@@ -180,25 +179,25 @@ def rastrear_noticias_globales(partidos):
     return "Sin bajas críticas reportadas."
 
 def analizar_partido_baloncesto_ia(p, noticias_globales):
-    info_lineas = ""
-    if p.get("spread_point") is not None:
-        info_lineas += f"Línea Hándicap BetPlay: {p['spread_point']}. "
-    if p.get("total_point") is not None:
-        info_lineas += f"Línea Total Puntos BetPlay: {p['total_point']}. "
+    linea_total_str = f"{p['total_point']}" if p.get("total_point") is not None else "N/A"
+    linea_spread_str = f"{p['spread_point']}" if p.get("spread_point") is not None else "N/A"
 
     prompt_triangulacion = (
         f"EVALUACIÓN DE TRIANGULACIÓN DE BALONCESTO ({p['equipo_local']} vs {p['equipo_visitante']} - {p['liga']}):\n\n"
-        f"1. DATOS FINANCIEROS REALES DE BETPLAY/KAMBI (PROVISTOS POR PYTHON):\n"
-        f"   - Local: {p['equipo_local']} (Cuota: {p['cuota_local']} | Prob. Desmarginada: {p['prob_real_local']}%)\n"
-        f"   - Visitante: {p['equipo_visitante']} (Cuota: {p['cuota_visita']} | Prob. Desmarginada: {p['prob_real_visita']}%)\n"
-        f"   - {info_lineas}\n\n"
+        f"1. DATOS FINANCIEROS REALES DE BETPLAY/KAMBI (OBLIGATORIOS Y EXACTOS):\n"
+        f"   - Local: {p['equipo_local']} (Cuota Ganador ML: {p['cuota_local']} | Prob. Desmarginada: {p['prob_real_local']}%)\n"
+        f"   - Visitante: {p['equipo_visitante']} (Cuota Ganador ML: {p['cuota_visita']} | Prob. Desmarginada: {p['prob_real_visita']}%)\n"
+        f"   - LÍNEA EXACTA TOTAL PUNTOS BETPLAY: {linea_total_str}\n"
+        f"   - LÍNEA EXACTA HÁNDICAP BETPLAY: {linea_spread_str}\n\n"
         f"2. REPORTES DE LESIONES/BAJAS CONFIRMADAS:\n"
         f"   {noticias_globales}\n\n"
-        f"INSTRUCCIÓN ANALÍTICA DE EVALUACIÓN:\n"
-        f"A. Basándote en la probabilidad desmarginada y las líneas de Hándicap/Totales, selecciona la opción con mayor fortaleza cuantitativa.\n"
-        f"B. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible.\n"
-        f"C. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
-        f"D. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
+        f"REGLAS DE PRECISIÓN ABSOLUTA PARA BETPLAY:\n"
+        f"A. Si eliges un mercado de Total de Puntos (Over/Under), el texto de 'pick_principal' DEBE usar EXACTAMENTE la cifra {linea_total_str} (ejemplo: 'Menos de {linea_total_str} Puntos Totales'). ESTÁ PROHIBIDO MODIFICAR O REDONDEAR LA LÍNEA.\n"
+        f"B. Si eliges un mercado de Hándicap, DEBES usar EXACTAMENTE la cifra {linea_spread_str}.\n"
+        f"C. Si eliges Ganador del Partido, usa la nomenclatura exacta de BetPlay: '[Nombre Equipo] Ganador (Moneyline)'.\n"
+        f"D. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible.\n"
+        f"E. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
+        f"F. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
     )
 
     for intento in range(2):
