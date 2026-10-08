@@ -2,13 +2,23 @@ import os
 import json
 import time
 import requests
+import socket
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (REINTENTOS DE RED Y TIMEOUT)
+# 1. PARCHE DE INFRAESTRUCTURA: FORZAR IPV4 EN GITHUB ACTIONS
+# ---------------------------------------------------------
+orig_getaddrinfo = socket.getaddrinfo
+def getaddrinfo_ipv4_only(*args, **kwargs):
+    responses = orig_getaddrinfo(*args, **kwargs)
+    return [res for res in responses if res[0] == socket.AF_INET]
+socket.getaddrinfo = getaddrinfo_ipv4_only
+
+# ---------------------------------------------------------
+# 2. CONFIGURACIÓN Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -19,13 +29,12 @@ UMBRAL_MINIMO_FILTRO = 75.0
 PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-# CLIENTE GEMINI CON TIMEOUT HARDWARE DE 10 SEGUNDOS
 client_gemini = None
 if GEMINI_API_KEY:
     try:
         client_gemini = genai.Client(
             api_key=GEMINI_API_KEY,
-            http_options={'timeout': 10.0}  # ABORTA CUALQUIER CONSULTA QUE SUPERE LOS 10 SEGUNDOS
+            http_options={'timeout': 15.0}
         )
     except Exception as e:
         print("Error inicializando cliente Gemini:", e)
@@ -190,7 +199,6 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         f"D. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
     )
 
-    # REINTENTO AUTOMÁTICO ANTE CORTES TEMPORALES DE RED EN GITHUB ACTIONS
     for intento in range(2):
         try:
             res = client_gemini.models.generate_content(
@@ -206,14 +214,14 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
                 return json.loads(res.text), "OK"
         except Exception as e:
             print(f"Intento {intento + 1} - Error de red o timeout evaluando {p['equipo_local']} vs {p['equipo_visitante']}: {e}")
-            time.sleep(2)  # ESPERA 2 SEGUNDOS ANTES DEL REINTENTO
+            time.sleep(2)
 
     return None, "ERROR_RED_PERSISTENTE"
 
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Rigor 75% + Reintentos de Red): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Rigor 75% + Parche IPv4): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
@@ -221,7 +229,6 @@ def ejecutar_escaneo():
         enviar_mensaje_telegram(msg)
         return
 
-    # LÍMITE DE CONTROL DE TIEMPO: Máximo 8 partidos por lote
     partidos_recortados = partidos[:8]
 
     noticias_globales = rastrear_noticias_globales(partidos_recortados)
