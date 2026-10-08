@@ -16,8 +16,7 @@ UMBRAL_MINIMO_FILTRO = 75.0
 PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-# MODELO ESTÁNDAR EXIGIDO POR EL SISTEMA
-MODELO_GEMINI = "gemini-3.8-flash"
+MODELO_GEMINI = "gemini-2.5-flash"
 
 LIGAS_BALONCESTO = [
     {"nombre": "🏀 NBA Pretemporada", "sport_key": "basketball_nba_preseason"},
@@ -34,7 +33,7 @@ def enviar_mensaje_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        res = requests.post(url, json=payload, timeout=8)
+        res = requests.post(url, json=payload, timeout=10)
         return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
@@ -47,7 +46,7 @@ def obtener_partidos_baloncesto():
 
     lista_partidos = []
     ahora_utc = datetime.now(timezone.utc)
-    fin_ventana_utc = ahora_utc + timedelta(hours=16)
+    fin_ventana_utc = ahora_utc + timedelta(hours=18)
 
     for liga in LIGAS_BALONCESTO:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -58,7 +57,7 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            res = requests.get(url, params=params, timeout=8)
+            res = requests.get(url, params=params, timeout=10)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -155,8 +154,9 @@ def llamar_gemini_rest(prompt):
         }
     }
 
+    # TIMEOUT AMPLIADO A 30 SEGUNDOS
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=12)
+        res = requests.post(url, headers=headers, json=payload, timeout=30)
         if res.status_code == 200:
             datos = res.json()
             texto_json = datos['candidates'][0]['content']['parts'][0]['text']
@@ -205,14 +205,14 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         res = llamar_gemini_rest(prompt_triangulacion)
         if res:
             return res, "OK"
-        time.sleep(1)
+        time.sleep(2)
 
     return None, "ERROR_CONEXION"
 
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Conexión REST Directa gemini-3.8-flash - Rigor 75%): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Timeout Ampliado 30s - Rigor 75%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
@@ -220,7 +220,7 @@ def ejecutar_escaneo():
         enviar_mensaje_telegram(msg)
         return
 
-    partidos_recortados = partidos[:8]
+    partidos_recortados = partidos[:12]
     noticias_globales = rastrear_noticias_globales(partidos_recortados)
     enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (TRIANGULACIÓN REAL)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
