@@ -16,7 +16,8 @@ UMBRAL_MINIMO_FILTRO = 75.0
 PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-MODELO_GEMINI = "gemini-1.5-flash"
+# MODELO ESTÁNDAR EXIGIDO POR EL SISTEMA
+MODELO_GEMINI = "gemini-3.8-flash"
 
 LIGAS_BALONCESTO = [
     {"nombre": "🏀 NBA Pretemporada", "sport_key": "basketball_nba_preseason"},
@@ -211,7 +212,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Conexión REST Directa - Rigor 75%): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Conexión REST Directa gemini-3.8-flash - Rigor 75%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
