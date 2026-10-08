@@ -16,7 +16,8 @@ UMBRAL_MINIMO_FILTRO = 75.0
 PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-MODELO_GEMINI = "gemini-2.5-flash"
+# MODELO EXIGIDO Y FIJADO EN EL SISTEMA
+MODELO_GEMINI = "gemini-3.8-flash"
 
 LIGAS_BALONCESTO = [
     {"nombre": "🏀 NBA Pretemporada", "sport_key": "basketball_nba_preseason"},
@@ -154,7 +155,6 @@ def llamar_gemini_rest(prompt):
         }
     }
 
-    # TIMEOUT AMPLIADO A 30 SEGUNDOS
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=30)
         if res.status_code == 200:
@@ -212,7 +212,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Timeout Ampliado 30s - Rigor 75%): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Conexión REST Directa gemini-3.8-flash - Rigor 75%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
