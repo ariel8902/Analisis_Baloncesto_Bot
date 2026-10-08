@@ -2,29 +2,10 @@ import os
 import json
 import time
 import requests
-import socket
 from datetime import datetime, timezone, timedelta
-from pydantic import BaseModel, Field
-from google import genai
-from google.genai import types
 
 # ---------------------------------------------------------
-# 1. PARCHE DEFINITIVO DE RED: DESACTIVAR IPV6 A NIVEL DE SOCKET Y URLLIB3
-# ---------------------------------------------------------
-old_getaddrinfo = socket.getaddrinfo
-def new_getaddrinfo(*args, **kwargs):
-    responses = old_getaddrinfo(*args, **kwargs)
-    return [response for response in responses if response[0] == socket.AF_INET]
-socket.getaddrinfo = new_getaddrinfo
-
-try:
-    import urllib3.util.connection as urllib3_cn
-    urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
-except ImportError:
-    pass
-
-# ---------------------------------------------------------
-# 2. CONFIGURACIÓN Y CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -35,17 +16,7 @@ UMBRAL_MINIMO_FILTRO = 75.0
 PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-client_gemini = None
-if GEMINI_API_KEY:
-    try:
-        client_gemini = genai.Client(
-            api_key=GEMINI_API_KEY,
-            http_options={'timeout': 20.0}
-        )
-    except Exception as e:
-        print("Error inicializando cliente Gemini:", e)
-
-MODELO_GEMINI = 'gemini-3.8-flash'
+MODELO_GEMINI = "gemini-1.5-flash"
 
 LIGAS_BALONCESTO = [
     {"nombre": "🏀 NBA Pretemporada", "sport_key": "basketball_nba_preseason"},
@@ -55,17 +26,6 @@ LIGAS_BALONCESTO = [
     {"nombre": "🏀 NBL Australia", "sport_key": "basketball_nbl"}
 ]
 
-class AnalisisBaloncestoSchema(BaseModel):
-    prob_pick_principal: float = Field(description="Probabilidad estimada final (0 a 100)")
-    pick_principal: str = Field(description="Mercado comercial exacto en BetPlay (ej. Gana Local ML, Handicap -4.5, Total Over 215.5)")
-    cuota_evaluada: float = Field(description="Cuota decimal real evaluada provista por BetPlay/Kambi.")
-    margen_operatividad_universal: str = Field(description="Instrucción del rango aceptable de cuota/línea en BetPlay y cuándo ABSTENERSE.")
-    regla_valor_betplay: str = Field(description="Regla de cuota en BetPlay. Exige abstenerse si cae por debajo de 1.40.")
-    stake_principal: str = Field(description="Stake sugerido según certeza (ej. 3/5 o 4/5)")
-    prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
-    pick_cobertura: str = Field(description="Opción de cobertura comercial en BetPlay")
-    analisis_tactico: str = Field(description="Justificación basada en ausencias confirmadas o ventaja cuantitativa en máx 2 oraciones.")
-
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Credenciales de Telegram no configuradas.")
@@ -73,7 +33,7 @@ def enviar_mensaje_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        res = requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=8)
         return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
@@ -97,7 +57,7 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            res = requests.get(url, params=params, timeout=5)
+            res = requests.get(url, params=params, timeout=8)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -158,32 +118,67 @@ def obtener_partidos_baloncesto():
             print(f"Error consultando {liga['nombre']}:", e)
     return lista_partidos
 
+def llamar_gemini_rest(prompt):
+    if not GEMINI_API_KEY:
+        return None
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO_GEMINI}:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    
+    schema_definition = {
+        "type": "OBJECT",
+        "properties": {
+            "prob_pick_principal": {"type": "NUMBER"},
+            "pick_principal": {"type": "STRING"},
+            "cuota_evaluada": {"type": "NUMBER"},
+            "margen_operatividad_universal": {"type": "STRING"},
+            "regla_valor_betplay": {"type": "STRING"},
+            "stake_principal": {"type": "STRING"},
+            "prob_cobertura": {"type": "NUMBER"},
+            "pick_cobertura": {"type": "STRING"},
+            "analisis_tactico": {"type": "STRING"}
+        },
+        "required": [
+            "prob_pick_principal", "pick_principal", "cuota_evaluada",
+            "margen_operatividad_universal", "regla_valor_betplay",
+            "stake_principal", "prob_cobertura", "pick_cobertura", "analisis_tactico"
+        ]
+    }
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": schema_definition,
+            "temperature": 0.05
+        }
+    }
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=12)
+        if res.status_code == 200:
+            datos = res.json()
+            texto_json = datos['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(texto_json)
+        else:
+            print(f"Error HTTP Gemini REST: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"Excepción en llamada REST a Gemini: {e}")
+    return None
+
 def rastrear_noticias_globales(partidos):
-    if not client_gemini or not partidos:
+    if not partidos:
         return "Sin novedades web previas."
 
     resumen = "\n".join([f"- {p['equipo_local']} vs {p['equipo_visitante']} ({p['fecha']})" for p in partidos])
-    query = f"Busca EXCLUSIVAMENTE bajas/lesiones OFICIALES confirmadas para los equipos:\n{resumen}"
-
-    for intento in range(2):
-        try:
-            res = client_gemini.models.generate_content(
-                model=MODELO_GEMINI,
-                contents=query,
-                config=types.GenerateContentConfig(tools=[{"google_search": {}}])
-            )
-            if res and res.text:
-                return res.text
-        except Exception as e:
-            print(f"Intento {intento + 1} - Advertencia o error de red en rastreo global: {e}")
-            time.sleep(2)
-
+    prompt = f"Resume reportes oficiales de lesiones y bajas confirmadas para los siguientes partidos de baloncesto:\n{resumen}"
+    
+    res = llamar_gemini_rest(prompt)
+    if res and isinstance(res, dict):
+        return res.get("analisis_tactico", "Sin bajas críticas reportadas.")
     return "Sin bajas críticas reportadas."
 
 def analizar_partido_baloncesto_ia(p, noticias_globales):
-    if not client_gemini:
-        return None, "IA no configurada"
-
     info_lineas = ""
     if p.get("spread_point") is not None:
         info_lineas += f"Línea Hándicap BetPlay: {p['spread_point']}. "
@@ -206,28 +201,17 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
     )
 
     for intento in range(2):
-        try:
-            res = client_gemini.models.generate_content(
-                model=MODELO_GEMINI,
-                contents=prompt_triangulacion,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AnalisisBaloncestoSchema,
-                    temperature=0.05
-                )
-            )
-            if res and res.text:
-                return json.loads(res.text), "OK"
-        except Exception as e:
-            print(f"Intento {intento + 1} - Error de red o timeout evaluando {p['equipo_local']} vs {p['equipo_visitante']}: {e}")
-            time.sleep(2)
+        res = llamar_gemini_rest(prompt_triangulacion)
+        if res:
+            return res, "OK"
+        time.sleep(1)
 
-    return None, "ERROR_RED_PERSISTENTE"
+    return None, "ERROR_CONEXION"
 
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Rigor 75% + Parche Dual IPv4): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Conexión REST Directa - Rigor 75%): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
@@ -236,7 +220,6 @@ def ejecutar_escaneo():
         return
 
     partidos_recortados = partidos[:8]
-
     noticias_globales = rastrear_noticias_globales(partidos_recortados)
     enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (TRIANGULACIÓN REAL)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
