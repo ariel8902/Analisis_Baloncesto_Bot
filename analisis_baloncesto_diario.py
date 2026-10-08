@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (TIMEOUT HTTP REAL EN SOCKET)
+# 1. CONFIGURACIÓN Y CREDENCIALES (REINTENTOS DE RED Y TIMEOUT)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -19,7 +19,7 @@ UMBRAL_MINIMO_FILTRO = 75.0
 PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-# CLIENTE GEMINI CON TIMEOUT HARDWARE DE 10 SEGUNDOS POR CONSULTA
+# CLIENTE GEMINI CON TIMEOUT HARDWARE DE 10 SEGUNDOS
 client_gemini = None
 if GEMINI_API_KEY:
     try:
@@ -28,7 +28,7 @@ if GEMINI_API_KEY:
             http_options={'timeout': 10.0}  # ABORTA CUALQUIER CONSULTA QUE SUPERE LOS 10 SEGUNDOS
         )
     except Exception as e:
-        print("Error inicializando cliente Gemini con HTTP timeout:", e)
+        print("Error inicializando cliente Gemini:", e)
 
 MODELO_GEMINI = 'gemini-3.8-flash'
 
@@ -82,7 +82,7 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            res = requests.get(url, params=params, timeout=4)
+            res = requests.get(url, params=params, timeout=5)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -150,16 +150,18 @@ def rastrear_noticias_globales(partidos):
     resumen = "\n".join([f"- {p['equipo_local']} vs {p['equipo_visitante']} ({p['fecha']})" for p in partidos])
     query = f"Busca EXCLUSIVAMENTE bajas/lesiones OFICIALES confirmadas para los equipos:\n{resumen}"
 
-    try:
-        res = client_gemini.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=query,
-            config=types.GenerateContentConfig(tools=[{"google_search": {}}])
-        )
-        if res and res.text:
-            return res.text
-    except Exception as e:
-        print("Advertencia o timeout en rastreo global:", e)
+    for intento in range(2):
+        try:
+            res = client_gemini.models.generate_content(
+                model=MODELO_GEMINI,
+                contents=query,
+                config=types.GenerateContentConfig(tools=[{"google_search": {}}])
+            )
+            if res and res.text:
+                return res.text
+        except Exception as e:
+            print(f"Intento {intento + 1} - Advertencia o error de red en rastreo global: {e}")
+            time.sleep(2)
 
     return "Sin bajas críticas reportadas."
 
@@ -188,28 +190,30 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         f"D. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
     )
 
-    try:
-        res = client_gemini.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=prompt_triangulacion,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=AnalisisBaloncestoSchema,
-                temperature=0.05
+    # REINTENTO AUTOMÁTICO ANTE CORTES TEMPORALES DE RED EN GITHUB ACTIONS
+    for intento in range(2):
+        try:
+            res = client_gemini.models.generate_content(
+                model=MODELO_GEMINI,
+                contents=prompt_triangulacion,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=AnalisisBaloncestoSchema,
+                    temperature=0.05
+                )
             )
-        )
-        if res and res.text:
-            return json.loads(res.text), "OK"
-    except Exception as e:
-        print(f"Timeout o error evaluando {p['equipo_local']} vs {p['equipo_visitante']}: {e}")
-        return None, str(e)
+            if res and res.text:
+                return json.loads(res.text), "OK"
+        except Exception as e:
+            print(f"Intento {intento + 1} - Error de red o timeout evaluando {p['equipo_local']} vs {p['equipo_visitante']}: {e}")
+            time.sleep(2)  # ESPERA 2 SEGUNDOS ANTES DEL REINTENTO
 
-    return None, "ERROR_GENERAL"
+    return None, "ERROR_RED_PERSISTENTE"
 
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Rigor Restablecido 75% + Timeout Socket 10s): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Rigor 75% + Reintentos de Red): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
