@@ -22,7 +22,9 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
+# Incluye la clave específica para la pretemporada de la NBA y ligas internacionales
 LIGAS_BALONCESTO = [
+    {"nombre": "🏀 NBA Pretemporada", "sport_key": "basketball_nba_preseason"},
     {"nombre": "🏀 NBA", "sport_key": "basketball_nba"},
     {"nombre": "🏀 Euroliga", "sport_key": "basketball_euroleague"},
     {"nombre": "🏀 Liga ACB España", "sport_key": "basketball_spain_acb"},
@@ -60,7 +62,7 @@ def obtener_partidos_baloncesto():
 
     lista_partidos = []
     ahora_utc = datetime.now(timezone.utc)
-    fin_ventana_utc = ahora_utc + timedelta(hours=14)
+    fin_ventana_utc = ahora_utc + timedelta(hours=16)
 
     for liga in LIGAS_BALONCESTO:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -179,7 +181,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
         f"REGLAS DE TRIANGULACIÓN INVIOLABLES:\n"
         f"A. EVALÚA ÚNICAMENTE OPCIONES CON CUOTA REAL >= {PISO_MINIMO_CUOTA}. PROHIBIDO ESTIMAR O SUGERIR CUOTAS MENORES A 1.40.\n"
         f"B. Prioriza Hándicaps o Totales si ofrecen mayor relación valor/certeza que el Moneyline.\n"
-        f"C. Si hay reporte de bajas de figuras clave o fatiga por Back-to-Back, ajusta la probabilidad a < 75%.\n"
+        f"C. Si hay reporte de bajas de figuras clave o rotación por pretemporada/back-to-back, ajusta la probabilidad a < 75%.\n"
         f"D. Si la certeza calculada es menor al {UMBRAL_MINIMO_FILTRO}%, descarta el partido inmediatamente."
     )
 
@@ -204,11 +206,11 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo optimizado de Baloncesto (Rastreo Consolidado + Piso 1.40): {fecha_hora_col}")
+    print(f"Iniciando escaneo optimizado de Baloncesto (Rastreo Consolidado + NBA Pretemporada): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
-        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados que cumplan el filtro de cuotas para las próximas 14 horas.</i>"
+        msg = f"🏀 <b>REPORTE BALONCESTO</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados que cumplan el filtro de cuotas para las próximas 16 horas.</i>"
         enviar_mensaje_telegram(msg)
         return
 
