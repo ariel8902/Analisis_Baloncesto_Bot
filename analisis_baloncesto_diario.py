@@ -5,7 +5,6 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import requests
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
 
 # ---------------------------------------------------------
 # 1. CONFIGURACIÓN Y CREDENCIALES
@@ -35,11 +34,10 @@ def enviar_mensaje_telegram(texto):
         return False
 
 async def extraer_cuotas_scraping_betplay():
-    """Navega visualmente la web de BetPlay con Playwright y lee la pantalla real"""
+    """Navega visualmente la web de BetPlay con Playwright en modo headless"""
     lista_partidos = []
     
     async with async_playwright() as p:
-        # Lanzar navegador Chromium en modo headless con banderas de evasión
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -49,44 +47,36 @@ async def extraer_cuotas_scraping_betplay():
                 '--window-size=1920,1080'
             ]
         )
+        
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
             locale='es-CO',
             timezone_id='America/Bogota'
         )
+        
         page = await context.new_page()
-        await stealth_async(page)
 
         print(f"Abriendo navegador e ingresando a BetPlay: {BETPLAY_BASKETBALL_URL}")
         try:
-            # Navegar e interactuar con la interfaz gráfica
             response = await page.goto(BETPLAY_BASKETBALL_URL, wait_until="networkidle", timeout=45000)
             if response and response.status != 200:
                 print(f"Advertencia: Respuesta HTTP de BetPlay: {response.status}")
 
-            # Esperar a que la parrilla de cuotas y tarjetas cargue en pantalla
             await page.wait_for_timeout(5000)
 
-            # Capturar eventos renderizados visualmente en el DOM de BetPlay
             event_cards = await page.query_selector_all('.KambiBC-event-item, [class*="event-item"], [class*="EventCard"]')
             print(f"Eventos detectados en pantalla: {len(event_cards)}")
-
-            ahora_utc = datetime.now(timezone.utc)
-            fin_ventana_utc = ahora_utc + timedelta(hours=12)
 
             for card in event_cards[:15]:
                 try:
                     texto_card = await card.inner_text()
                     lineas = [linea.strip() for linea in texto_card.split('\n') if linea.strip()]
 
-                    # Estructura típica de lectura de pantalla para eventos de baloncesto
                     if len(lineas) >= 4:
-                        # Extraer nombres de equipos y cuotas visibles
                         home_team = lineas[0]
                         away_team = lineas[1]
                         
-                        # Búsqueda de valores numéricos que corresponden a cuotas
                         cuotas = []
                         for item in lineas:
                             try:
