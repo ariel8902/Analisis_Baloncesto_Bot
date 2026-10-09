@@ -1,13 +1,14 @@
 import os
 import json
 import time
-import requests
+import asyncio
 from datetime import datetime, timezone, timedelta
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
+import requests
+from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (NATIVO BETPLAY / KAMBI)
+# 1. CONFIGURACIÓN Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -18,13 +19,7 @@ PISO_MINIMO_CUOTA = 1.40
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 MODELO_GEMINI = "gemini-3.8-flash"
-
-# URL PÚBLICA REAL DEL SERVIDOR CDN DE KAMBI PARA BETPLAY COLOMBIA
-KAMBI_BETPLAY_URL = "https://offering-api.kambi.com/offering/v2018/betplay/listView/basketball.json?lang=es_CO&market=CO"
-
-session = requests.Session()
-retries = Retry(total=3, backoff_factor=2, status_forcelist=[500, 502, 503, 504])
-session.mount('https://', HTTPAdapter(max_retries=retries))
+BETPLAY_BASKETBALL_URL = "https://betplay.com.co/apuestas#sports-hub/basketball"
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -33,106 +28,104 @@ def enviar_mensaje_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        res = session.post(url, json=payload, timeout=15)
+        res = requests.post(url, json=payload, timeout=15)
         return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
         return False
 
-def obtener_partidos_kambi_betplay():
-    """Extrae las cuotas directas desde el servidor nativo de Kambi/BetPlay"""
+async def extraer_cuotas_scraping_betplay():
+    """Navega visualmente la web de BetPlay con Playwright y lee la pantalla real"""
     lista_partidos = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
+    
+    async with async_playwright() as p:
+        # Lanzar navegador Chromium en modo headless con banderas de evasión
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--window-size=1920,1080'
+            ]
+        )
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080},
+            locale='es-CO',
+            timezone_id='America/Bogota'
+        )
+        page = await context.new_page()
+        await stealth_async(page)
 
-    try:
-        res = session.get(KAMBI_BETPLAY_URL, headers=headers, timeout=20)
-        if res.status_code != 200:
-            print(f"Error accediendo a Kambi: Status HTTP {res.status_code}")
-            return []
+        print(f"Abriendo navegador e ingresando a BetPlay: {BETPLAY_BASKETBALL_URL}")
+        try:
+            # Navegar e interactuar con la interfaz gráfica
+            response = await page.goto(BETPLAY_BASKETBALL_URL, wait_until="networkidle", timeout=45000)
+            if response and response.status != 200:
+                print(f"Advertencia: Respuesta HTTP de BetPlay: {response.status}")
 
-        data = res.json()
-        eventos = data.get("events", [])
+            # Esperar a que la parrilla de cuotas y tarjetas cargue en pantalla
+            await page.wait_for_timeout(5000)
 
-        ahora_utc = datetime.now(timezone.utc)
-        fin_ventana_utc = ahora_utc + timedelta(hours=12)
+            # Capturar eventos renderizados visualmente en el DOM de BetPlay
+            event_cards = await page.query_selector_all('.KambiBC-event-item, [class*="event-item"], [class*="EventCard"]')
+            print(f"Eventos detectados en pantalla: {len(event_cards)}")
 
-        for item in eventos:
-            event = item.get("event", {})
-            if not event:
-                continue
+            ahora_utc = datetime.now(timezone.utc)
+            fin_ventana_utc = ahora_utc + timedelta(hours=12)
 
-            # Validar ventana de tiempo (próximas 12 horas)
-            start_raw = event.get("start", "")
-            if not start_raw:
-                continue
-            dt_utc = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-            if not (ahora_utc <= dt_utc <= fin_ventana_utc):
-                continue
+            for card in event_cards[:15]:
+                try:
+                    texto_card = await card.inner_text()
+                    lineas = [linea.strip() for linea in texto_card.split('\n') if linea.strip()]
 
-            dt_colombia = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-            home_team = event.get("homeName", "").strip()
-            away_team = event.get("awayName", "").strip()
-            group_name = event.get("group", "Baloncesto")
+                    # Estructura típica de lectura de pantalla para eventos de baloncesto
+                    if len(lineas) >= 4:
+                        # Extraer nombres de equipos y cuotas visibles
+                        home_team = lineas[0]
+                        away_team = lineas[1]
+                        
+                        # Búsqueda de valores numéricos que corresponden a cuotas
+                        cuotas = []
+                        for item in lineas:
+                            try:
+                                val = float(item.replace(',', '.'))
+                                if 1.01 <= val <= 25.0:
+                                    cuotas.append(val)
+                            except ValueError:
+                                continue
 
-            c_loc, c_vis = None, None
-            spread_point, total_point = None, None
+                        if len(cuotas) >= 2:
+                            c_loc = cuotas[0]
+                            c_vis = cuotas[1]
 
-            # Extraer ofertas de apuestas directas de Kambi
-            offer_categories = item.get("betOffers", [])
-            for offer in offer_categories:
-                offer_type = offer.get("betOfferType", {}).get("name", "")
-                
-                # MERCADO MONEYLINE (GANADOR DEL PARTIDO CON PRÓRROGA INCLUIDA)
-                if offer_type in ["Match", "Moneyline", "Ganador - Prórroga incluida", "12"]:
-                    outcomes = offer.get("outcomes", [])
-                    for out in outcomes:
-                        label = out.get("label", "")
-                        type_out = out.get("type", "")
-                        price = out.get("odds", 0) / 1000.0  # Kambi maneja cuotas en milésimas (ej. 1830 -> 1.83)
+                            dt_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
 
-                        if type_out == "OT_ONE" or label.lower() == home_team.lower():
-                            c_loc = round(price, 2)
-                        elif type_out == "OT_TWO" or label.lower() == away_team.lower():
-                            c_vis = round(price, 2)
+                            prob_impl_home = (1 / c_loc) / ((1 / c_loc) + (1 / c_vis))
+                            prob_impl_away = (1 / c_vis) / ((1 / c_loc) + (1 / c_vis))
 
-                # MERCADO HÁNDICAP
-                elif offer_type in ["Handicap", "Hándicap de Puntos - Prórroga incluida"]:
-                    outcomes = offer.get("outcomes", [])
-                    for out in outcomes:
-                        if out.get("type") == "OT_ONE":
-                            spread_point = out.get("line", 0) / 1000.0
+                            lista_partidos.append({
+                                "liga": "🏀 Baloncesto BetPlay",
+                                "equipo_local": home_team,
+                                "equipo_visitante": away_team,
+                                "fecha": dt_colombia.strftime("%Y-%m-%d"),
+                                "hora": dt_colombia.strftime("%I:%M %p"),
+                                "cuota_local": c_loc,
+                                "cuota_visita": c_vis,
+                                "prob_real_local": round(prob_impl_home * 100, 1),
+                                "prob_real_visita": round(prob_impl_away * 100, 1),
+                                "spread_point": "N/A",
+                                "total_point": "N/A"
+                            })
+                except Exception as err_card:
+                    print("Error leyendo tarjeta de evento:", err_card)
+                    continue
 
-                # MERCADO TOTALES
-                elif offer_type in ["Total", "Total de puntos - Prórroga incluida"]:
-                    outcomes = offer.get("outcomes", [])
-                    if outcomes:
-                        total_point = outcomes[0].get("line", 0) / 1000.0
-
-            if not c_loc or not c_vis:
-                continue
-
-            prob_impl_home = (1 / c_loc) / ((1 / c_loc) + (1 / c_vis))
-            prob_impl_away = (1 / c_vis) / ((1 / c_loc) + (1 / c_vis))
-
-            lista_partidos.append({
-                "liga": f"🏀 {group_name}",
-                "equipo_local": home_team,
-                "equipo_visitante": away_team,
-                "fecha": dt_colombia.strftime("%Y-%m-%d"),
-                "hora": dt_colombia.strftime("%I:%M %p"),
-                "cuota_local": c_loc,
-                "cuota_visita": c_vis,
-                "prob_real_local": round(prob_impl_home * 100, 1),
-                "prob_real_visita": round(prob_impl_away * 100, 1),
-                "spread_point": spread_point,
-                "total_point": total_point
-            })
-
-    except Exception as e:
-        print("Error procesando feed nativo de Kambi:", e)
+        except Exception as e:
+            print("Error durante la navegación con Playwright:", e)
+        finally:
+            await browser.close()
 
     return lista_partidos
 
@@ -173,7 +166,7 @@ def llamar_gemini_rest(prompt):
 
     for intento in range(3):
         try:
-            res = session.post(url, headers=headers, json=payload, timeout=60)
+            res = requests.post(url, headers=headers, json=payload, timeout=60)
             if res.status_code == 200:
                 datos = res.json()
                 texto_json = datos['candidates'][0]['content']['parts'][0]['text']
@@ -188,20 +181,15 @@ def llamar_gemini_rest(prompt):
     return None
 
 def analizar_partido_baloncesto_ia(p):
-    linea_total_str = f"{p['total_point']}" if p.get("total_point") is not None else "N/A"
-    linea_spread_str = f"{p['spread_point']}" if p.get("spread_point") is not None else "N/A"
-
     prompt_triangulacion = (
-        f"EVALUACIÓN DE TRIANGULACIÓN DE BALONCESTO NATIVA BETPLAY ({p['equipo_local']} vs {p['equipo_visitante']} - {p['liga']}):\n\n"
-        f"DATOS DIRECTOS DE KAMBI/BETPLAY:\n"
+        f"EVALUACIÓN DE TRIANGULACIÓN DE BALONCESTO SCRAPING NATIVO ({p['equipo_local']} vs {p['equipo_visitante']} - {p['liga']}):\n\n"
+        f"DATOS EXTRAÍDOS DE PANTALLA BETPLAY:\n"
         f"- LOCAL: {p['equipo_local']} -> CUOTA BETPLAY: {p['cuota_local']}\n"
-        f"- VISITANTE: {p['equipo_visitante']} -> CUOTA BETPLAY: {p['cuota_visita']}\n"
-        f"- LÍNEA TOTAL PUNTOS: {linea_total_str}\n"
-        f"- LÍNEA HÁNDICAP LOCAL: {linea_spread_str}\n\n"
+        f"- VISITANTE: {p['equipo_visitante']} -> CUOTA BETPLAY: {p['cuota_visita']}\n\n"
         f"REGLA OBLIGATORIA DE ASIGNACIÓN:\n"
-        f"1. Si tu pronóstico es la victoria de {p['equipo_local']}, la 'cuota_evaluada' TIENE QUE SER {p['cuota_local']}.\n"
-        f"2. Si tu pronóstico es la victoria de {p['equipo_visitante']}, la 'cuota_evaluada' TIENE QUE SER {p['cuota_visita']}.\n"
-        f"3. ESTÁ PROHIBIDO intercambiar las cuotas entre los dos equipos.\n"
+        f"1. Si tu pronóstico es la victoria de {p['equipo_local']}, la 'cuota_evaluada' DEBE SER EXACTAMENTE {p['cuota_local']}.\n"
+        f"2. Si tu pronóstico es la victoria de {p['equipo_visitante']}, la 'cuota_evaluada' DEBE SER EXACTAMENTE {p['cuota_visita']}.\n"
+        f"3. ESTÁ ABSOLUTAMENTE PROHIBIDO INTERCAMBIAR LAS CUOTAS.\n"
         f"4. Requisito estricto: Probabilidad >= {UMBRAL_MINIMO_FILTRO}% y cuota >= {PISO_MINIMO_CUOTA}."
     )
 
@@ -216,16 +204,16 @@ def analizar_partido_baloncesto_ia(p):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo Nativo Kambi/BetPlay: {fecha_hora_col}")
+    print(f"Iniciando escaneo Scraping Nativo Playwright (BetPlay): {fecha_hora_col}")
     
-    partidos = obtener_partidos_kambi_betplay()
+    partidos = asyncio.run(extraer_cuotas_scraping_betplay())
 
     if not partidos:
-        msg = f"🏀 <b>REPORTE BALONCESTO BETPLAY</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados en las próximas 12 horas en la parrilla de BetPlay.</i>"
+        msg = f"🏀 <b>REPORTE BALONCESTO BETPLAY (SCRAPING)</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos cargados en la pantalla de BetPlay en este momento.</i>"
         enviar_mensaje_telegram(msg)
         return
 
-    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (NATIVO BETPLAY)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
+    enviar_mensaje_telegram(f"🏀 <b>PRONÓSTICOS BALONCESTO VIP (SCRAPING BETPLAY)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
 
     for p in partidos[:12]:
         analisis = analizar_partido_baloncesto_ia(p)
