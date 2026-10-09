@@ -7,7 +7,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES (NATIVO BETPLAY / KAMBI)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -19,8 +19,8 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 MODELO_GEMINI = "gemini-3.8-flash"
 
-# URL DIRECTA DE LA API NATIVA DE KAMBI PARA BETPLAY
-KAMBI_BETPLAY_URL = "https://natively-offering-api.kambi.com/offering/v2018/betplay/listView/basketball.json?lang=es_CO&market=CO"
+# URL PÚBLICA REAL DEL SERVIDOR CDN DE KAMBI PARA BETPLAY COLOMBIA
+KAMBI_BETPLAY_URL = "https://offering-api.kambi.com/offering/v2018/betplay/listView/basketball.json?lang=es_CO&market=CO"
 
 session = requests.Session()
 retries = Retry(total=3, backoff_factor=2, status_forcelist=[500, 502, 503, 504])
@@ -40,7 +40,7 @@ def enviar_mensaje_telegram(texto):
         return False
 
 def obtener_partidos_kambi_betplay():
-    """Extrae las cuotas directas desde los servidores nativos de Kambi/BetPlay"""
+    """Extrae las cuotas directas desde el servidor nativo de Kambi/BetPlay"""
     lista_partidos = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -50,7 +50,7 @@ def obtener_partidos_kambi_betplay():
     try:
         res = session.get(KAMBI_BETPLAY_URL, headers=headers, timeout=20)
         if res.status_code != 200:
-            print(f"Error accediendo a Kambi: Status {res.status_code}")
+            print(f"Error accediendo a Kambi: Status HTTP {res.status_code}")
             return []
 
         data = res.json()
@@ -80,19 +80,18 @@ def obtener_partidos_kambi_betplay():
             c_loc, c_vis = None, None
             spread_point, total_point = None, None
 
-            # Extraer mercados de la oferta directa
+            # Extraer ofertas de apuestas directas de Kambi
             offer_categories = item.get("betOffers", [])
             for offer in offer_categories:
                 offer_type = offer.get("betOfferType", {}).get("name", "")
                 
-                # MERCADO MONEYLINE (GANADOR DEL PARTIDO INCLUYENDO PRÓRROGA)
+                # MERCADO MONEYLINE (GANADOR DEL PARTIDO CON PRÓRROGA INCLUIDA)
                 if offer_type in ["Match", "Moneyline", "Ganador - Prórroga incluida", "12"]:
                     outcomes = offer.get("outcomes", [])
                     for out in outcomes:
-                        # Mapeo directo por rol de equipo en Kambi
                         label = out.get("label", "")
                         type_out = out.get("type", "")
-                        price = out.get("odds", 0) / 1000.0  # Kambi entrega la cuota en formato entero (ej. 1830 = 1.83)
+                        price = out.get("odds", 0) / 1000.0  # Kambi maneja cuotas en milésimas (ej. 1830 -> 1.83)
 
                         if type_out == "OT_ONE" or label.lower() == home_team.lower():
                             c_loc = round(price, 2)
