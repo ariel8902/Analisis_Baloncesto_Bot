@@ -7,7 +7,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (VENTANA 12H + BLINDAJE 503)
+# 1. CONFIGURACIÓN Y CREDENCIALES (ESTRUCTURA DEFINITIVA)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -15,7 +15,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
 UMBRAL_MINIMO_FILTRO = 75.0
-PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD INVIOLABLE
+PISO_MINIMO_CUOTA = 1.40  # CANDADO DURO DE RENTABILIDAD
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 MODELO_GEMINI = "gemini-3.8-flash"
@@ -29,7 +29,7 @@ LIGAS_BALONCESTO = [
 ]
 
 session = requests.Session()
-retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 504])
+retries = Retry(total=3, backoff_factor=2, status_forcelist=[500, 502, 503, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
 def enviar_mensaje_telegram(texto):
@@ -39,11 +39,17 @@ def enviar_mensaje_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        res = session.post(url, json=payload, timeout=10)
+        res = session.post(url, json=payload, timeout=15)
         return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
         return False
+
+def coincide_equipo(nombre_corto, nombre_largo):
+    """Verifica si el nombre de la cuota pertenece al equipo sin depender de coincidencias del 100%"""
+    n1 = nombre_corto.lower().strip()
+    n2 = nombre_largo.lower().strip()
+    return n1 in n2 or n2 in n1 or any(p in n2 for p in n1.split() if len(p) > 3)
 
 def obtener_partidos_baloncesto():
     if not ODDS_API_KEY:
@@ -52,7 +58,6 @@ def obtener_partidos_baloncesto():
 
     lista_partidos = []
     ahora_utc = datetime.now(timezone.utc)
-    # AJUSTE ESTRICTO: VENTANA DE 12 HORAS EXACTAS
     fin_ventana_utc = ahora_utc + timedelta(hours=12)
 
     for liga in LIGAS_BALONCESTO:
@@ -64,7 +69,7 @@ def obtener_partidos_baloncesto():
             "oddsFormat": "decimal"
         }
         try:
-            res = session.get(url, params=params, timeout=10)
+            res = session.get(url, params=params, timeout=15)
             if res.status_code != 200:
                 continue
             eventos = res.json()
@@ -79,6 +84,7 @@ def obtener_partidos_baloncesto():
                 dt_colombia = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
                 home_team = str(ev.get("home_team", "")).strip()
                 away_team = str(ev.get("away_team", "")).strip()
+                
                 c_loc, c_vis = None, None
                 spread_point, total_point = None, None
                 
@@ -86,27 +92,27 @@ def obtener_partidos_baloncesto():
                 if bookmakers:
                     bm_seleccionado = bookmakers[0]
                     for bm in bookmakers:
-                        if bm.get("key") in ["unibet", "unibet_eu", "888sport", "pinnacle", "williamhill"]:
+                        if bm.get("key") in ["unibet", "unibet_eu", "888sport"]:
                             bm_seleccionado = bm
                             break
 
                     for m in bm_seleccionado.get("markets", []):
+                        # AISLAMIENTO EXCLUSIVO DE MONEYLINE (H2H)
                         if m.get("key") == "h2h":
                             for o in m.get("outcomes", []):
-                                name_out = str(o.get("name", "")).strip().lower()
-                                if name_out == home_team.lower():
-                                    c_loc = o.get("price")
-                                elif name_out == away_team.lower():
-                                    c_vis = o.get("price")
+                                name_out = str(o.get("name", "")).strip()
+                                price_out = o.get("price")
+                                
+                                if coincide_equipo(home_team, name_out):
+                                    c_loc = price_out
+                                elif coincide_equipo(away_team, name_out):
+                                    c_vis = price_out
+                                    
                         elif m.get("key") == "spreads":
                             for o in m.get("outcomes", []):
-                                name_out = str(o.get("name", "")).strip().lower()
-                                if name_out == home_team.lower():
+                                name_out = str(o.get("name", "")).strip()
+                                if coincide_equipo(home_team, name_out):
                                     spread_point = o.get("point")
-                                elif name_out == away_team.lower() and spread_point is None:
-                                    val_point = o.get("point")
-                                    if val_point is not None:
-                                        spread_point = -val_point
                         elif m.get("key") == "totals":
                             outcomes = m.get("outcomes", [])
                             if outcomes:
@@ -171,23 +177,22 @@ def llamar_gemini_rest(prompt):
         }
     }
 
-    # MANEJO DE SATURACIÓN 503
     for intento in range(3):
         try:
-            res = session.post(url, headers=headers, json=payload, timeout=30)
+            res = session.post(url, headers=headers, json=payload, timeout=60)
             if res.status_code == 200:
                 datos = res.json()
                 texto_json = datos['candidates'][0]['content']['parts'][0]['text']
                 return json.loads(texto_json)
-            elif res.status_code == 503:
-                print(f"Intento {intento + 1}: Servidor saturado (503). Esperando 3 segundos...")
-                time.sleep(3)
+            elif res.status_code in [503, 500, 502, 504]:
+                print(f"Intento {intento + 1}: Servidor saturado ({res.status_code}). Reintentando en 4s...")
+                time.sleep(4)
             else:
                 print(f"Error HTTP Gemini REST: {res.status_code} - {res.text}")
                 break
         except Exception as e:
             print(f"Excepción en llamada REST (Intento {intento + 1}): {e}")
-            time.sleep(2)
+            time.sleep(3)
             
     return None
 
@@ -209,20 +214,17 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 
     prompt_triangulacion = (
         f"EVALUACIÓN DE TRIANGULACIÓN DE BALONCESTO ({p['equipo_local']} vs {p['equipo_visitante']} - {p['liga']}):\n\n"
-        f"1. DATOS FINANCIEROS REALES DE BETPLAY/KAMBI (MAPEO ESTRICTO):\n"
-        f"   - LOCAL: {p['equipo_local']} (Cuota ML: {p['cuota_local']} | Prob. Desmarginada: {p['prob_real_local']}%)\n"
-        f"   - VISITANTE: {p['equipo_visitante']} (Cuota ML: {p['cuota_visita']} | Prob. Desmarginada: {p['prob_real_visita']}%)\n"
-        f"   - LÍNEA EXACTA TOTAL PUNTOS BETPLAY: {linea_total_str}\n"
-        f"   - LÍNEA EXACTA HÁNDICAP LOCAL BETPLAY: {linea_spread_str}\n\n"
-        f"2. REPORTES DE LESIONES/BAJAS CONFIRMADAS:\n"
-        f"   {noticias_globales}\n\n"
-        f"INSTRUCCIONES OBLIGATORIAS:\n"
-        f"A. 'pick_principal': Asigna la cuota real que corresponde al equipo o línea seleccionada. PROHIBIDO CRUZAR CUOTAS ENTRE LOCAL Y VISITANTE.\n"
-        f"B. 'margen_operatividad_universal': Indica brevemente la instrucción de acción en BetPlay si la cuota oscila.\n"
-        f"C. 'regla_valor_betplay': Confirma cumplimiento de cuota real >= 1.40.\n"
-        f"D. ÚNICAMENTE reduce la certeza por debajo del {UMBRAL_MINIMO_FILTRO}% si el reporte confirma la baja OFICIAL de una figura titular indiscutible.\n"
-        f"E. Exige cuota real evaluada >= {PISO_MINIMO_CUOTA}.\n"
-        f"F. Si la opción principal seleccionada alcanza o supera el {UMBRAL_MINIMO_FILTRO}% de probabilidad real, confírmala."
+        f"DATOS DE ENTRADA PROCESADOS DE BETPLAY:\n"
+        f"- LOCAL: {p['equipo_local']} -> CUOTA MONEYLINE EXACTA: {p['cuota_local']}\n"
+        f"- VISITANTE: {p['equipo_visitante']} -> CUOTA MONEYLINE EXACTA: {p['cuota_visita']}\n"
+        f"- LÍNEA TOTAL PUNTOS: {linea_total_str}\n"
+        f"- LÍNEA HÁNDICAP LOCAL: {linea_spread_str}\n\n"
+        f"NOTICIAS DE BAJAS:\n{noticias_globales}\n\n"
+        f"REGLA OBLIGATORIA:\n"
+        f"1. Si seleccionas la victoria de {p['equipo_local']}, la 'cuota_evaluada' DEBE SER EXACTAMENTE {p['cuota_local']}.\n"
+        f"2. Si seleccionas la victoria de {p['equipo_visitante']}, la 'cuota_evaluada' DEBE SER EXACTAMENTE {p['cuota_visita']}.\n"
+        f"3. ESTÁ ABSOLUTAMENTE PROHIBIDO INTERCAMBIAR LAS CUOTAS.\n"
+        f"4. Requisito de probabilidad >= {UMBRAL_MINIMO_FILTRO}% y cuota >= {PISO_MINIMO_CUOTA}."
     )
 
     for intento in range(2):
@@ -236,7 +238,7 @@ def analizar_partido_baloncesto_ia(p, noticias_globales):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Baloncesto (Ventana de 12 Horas gemini-3.8-flash): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Baloncesto (Estructura Limpia ML): {fecha_hora_col}")
     partidos = obtener_partidos_baloncesto()
 
     if not partidos:
