@@ -34,7 +34,7 @@ def enviar_mensaje_telegram(texto):
         return False
 
 async def extraer_cuotas_scraping_betplay():
-    """Navega visualmente la web de BetPlay con Playwright en modo headless"""
+    """Navega visualmente la web de BetPlay con Playwright y extrae el texto puro"""
     lista_partidos = []
     
     async with async_playwright() as p:
@@ -59,60 +59,69 @@ async def extraer_cuotas_scraping_betplay():
 
         print(f"Abriendo navegador e ingresando a BetPlay: {BETPLAY_BASKETBALL_URL}")
         try:
-            await page.goto(BETPLAY_BASKETBALL_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(8000)
+            await page.goto(BETPLAY_BASKETBALL_URL, wait_until="networkidle", timeout=60000)
+            
+            try:
+                await page.wait_for_selector('.KambiBC-mod-event-line, [class*="event-item"]', timeout=15000)
+            except Exception:
+                print("Tiempo de espera agotado buscando selectores de Kambi, intentando lectura general...")
 
-            await page.evaluate("window.scrollBy(0, 1500)")
-            await page.wait_for_timeout(3000)
+            await page.evaluate("window.scrollBy(0, 800)")
+            await page.wait_for_timeout(4000)
 
-            event_cards = await page.query_selector_all('[class*="KambiBC-event-item__event-wrapper"], .KambiBC-event-item, [class*="event-item"]')
+            event_cards = await page.query_selector_all('.KambiBC-mod-event-line, .KambiBC-event-item')
             print(f"Eventos detectados en pantalla: {len(event_cards)}")
 
-            for card in event_cards:
+            for idx, card in enumerate(event_cards[:20]):
                 try:
                     texto_card = await card.inner_text()
                     lineas = [l.strip() for l in texto_card.split('\n') if l.strip()]
 
-                    cuotas = []
-                    equipos = []
+                    if idx < 3:
+                        print(f"--- DEBUG TARJETA {idx+1} ---")
+                        print(lineas)
 
+                    cuotas = []
                     for item in lineas:
                         try:
                             val = float(item.replace(',', '.'))
                             if 1.01 <= val <= 30.0:
                                 cuotas.append(val)
-                            continue
                         except ValueError:
                             pass
-                        
-                        if item.lower() not in ["más", "menos", "hándicap", "total", "ganador", "vs", "1", "2"] and len(item) > 2:
-                            if not any(char.isdigit() for char in item):
-                                equipos.append(item)
 
-                    if len(equipos) >= 2 and len(cuotas) >= 2:
-                        home_team = equipos[0]
-                        away_team = equipos[1]
+                    if len(cuotas) >= 2:
                         c_loc = cuotas[0]
                         c_vis = cuotas[1]
 
-                        dt_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
+                        nombres = [
+                            x for x in lineas 
+                            if not any(char.isdigit() for char in x) 
+                            and x.lower() not in ["más", "menos", "hándicap", "total", "ganador", "1", "2", "vs"]
+                            and len(x) > 2
+                        ]
 
-                        prob_impl_home = (1 / c_loc) / ((1 / c_loc) + (1 / c_vis))
-                        prob_impl_away = (1 / c_vis) / ((1 / c_loc) + (1 / c_vis))
+                        if len(nombres) >= 2:
+                            home_team = nombres[0]
+                            away_team = nombres[1]
 
-                        lista_partidos.append({
-                            "liga": "🏀 Baloncesto BetPlay",
-                            "equipo_local": home_team,
-                            "equipo_visitante": away_team,
-                            "fecha": dt_colombia.strftime("%Y-%m-%d"),
-                            "hora": dt_colombia.strftime("%I:%M %p"),
-                            "cuota_local": c_loc,
-                            "cuota_visita": c_vis,
-                            "prob_real_local": round(prob_impl_home * 100, 1),
-                            "prob_real_visita": round(prob_impl_away * 100, 1),
-                            "spread_point": "N/A",
-                            "total_point": "N/A"
-                        })
+                            dt_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
+                            prob_impl_home = (1 / c_loc) / ((1 / c_loc) + (1 / c_vis))
+                            prob_impl_away = (1 / c_vis) / ((1 / c_loc) + (1 / c_vis))
+
+                            lista_partidos.append({
+                                "liga": "🏀 Baloncesto BetPlay",
+                                "equipo_local": home_team,
+                                "equipo_visitante": away_team,
+                                "fecha": dt_colombia.strftime("%Y-%m-%d"),
+                                "hora": dt_colombia.strftime("%I:%M %p"),
+                                "cuota_local": c_loc,
+                                "cuota_visita": c_vis,
+                                "prob_real_local": round(prob_impl_home * 100, 1),
+                                "prob_real_visita": round(prob_impl_away * 100, 1),
+                                "spread_point": "N/A",
+                                "total_point": "N/A"
+                            })
                 except Exception as err_card:
                     continue
 
